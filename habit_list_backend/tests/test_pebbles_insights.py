@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
-import tests  # noqa: F401
 
+import tests  # noqa: F401
 
 pytestmark = pytest.mark.anyio
 

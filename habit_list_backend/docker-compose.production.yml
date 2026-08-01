@@ -1,0 +1,122 @@
+name: inner-terrain
+
+x-backend-common: &backend-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: inner-terrain-backend:local
+  env_file:
+    - ${APP_ENV_FILE:-.env.production}
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - backend
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg17-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - backend
+
+  migrate:
+    <<: *backend-common
+    restart: "no"
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      PROCESS_ROLE: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *backend-common
+    command:
+      [
+        "uvicorn",
+        "app.main:create_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8780",
+        "--workers",
+        "1",
+        "--timeout-keep-alive",
+        "60",
+      ]
+    environment:
+      PROCESS_ROLE: api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8780:8780"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8780/ready"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *backend-common
+    command: ["python", "-m", "app.worker"]
+    environment:
+      PROCESS_ROLE: worker
+      WORKER_HEARTBEAT_PATH: /tmp/habit-list-worker-heartbeat.json
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker.healthcheck"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  nginx:
+    image: nginx:1.27-alpine
+    environment:
+      DOMAIN: ${DEPLOY_DOMAIN:?DEPLOY_DOMAIN is required}
+      NGINX_ENVSUBST_FILTER: ^DOMAIN$
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - edge
+      - backend
+
+volumes:
+  postgres_data:
+
+networks:
+  edge:
+  backend:

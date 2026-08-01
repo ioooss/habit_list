@@ -70,11 +70,14 @@ async def patch_profile(req: PatchProfileReq, user_id: str = Depends(current_use
         u = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one()
         changes: list[str] = []
         if req.locale is not None:
-            u.locale = req.locale; changes.append(f"locale→{req.locale}")
+            u.locale = req.locale
+            changes.append(f"locale→{req.locale}")
         if req.timezone is not None:
-            u.timezone = req.timezone; changes.append(f"tz→{req.timezone}")
+            u.timezone = req.timezone
+            changes.append(f"tz→{req.timezone}")
         if req.current_style is not None:
-            u.current_style = req.current_style; changes.append(f"style→{req.current_style}")
+            u.current_style = req.current_style
+            changes.append(f"style→{req.current_style}")
         if req.settings is not None:
             merged = dict(u.settings_json or {})
             merged.update(req.settings)

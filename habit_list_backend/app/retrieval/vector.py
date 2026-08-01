@@ -53,6 +53,10 @@ async def ensure_embeddings_for(session: "AsyncSession", user_id: str, episodic_
     SELECT LEFT JOIN 会直接抛 OperationalError: no such table: episodic_vec。
     这里静默降级（只警告一次），保证 hybrid_retrieve / LLM 主链不受影响。"""
     settings = settings or get_settings()
+    if session.get_bind().dialect.name != "sqlite":
+        # PostgreSQL long-term vectors are owned by Memory V2/pgvector. Do not
+        # spend model calls on the legacy sqlite-vss table path.
+        return
     if not episodic_ids:
         return
     id_list = list(dict.fromkeys(episodic_ids))  # 去重保序
@@ -64,7 +68,7 @@ async def ensure_embeddings_for(session: "AsyncSession", user_id: str, episodic_
         rows = (await session.execute(
             text(
                 f"""
-                SELECT e.episodic_id, COALESCE(e.summary_1line,'') || ' ' || COALESCE(e.raw_user_text,'') || ' ' || COALESCE(e.raw_assistant_text,'') AS txt
+                SELECT e.episodic_id, COALESCE(e.summary_1line,'') || ' ' || COALESCE(e.raw_user_text,'') AS txt
                 FROM episodic e
                 LEFT JOIN episodic_vec v ON v.episodic_id = e.episodic_id
                 WHERE e.user_id=:uid AND e.status='active' AND e.episodic_id IN ({placeholders})
@@ -113,6 +117,8 @@ async def search(
 ) -> list[VecHit]:
     """1) dashscope embed query → 2) vss_topk episodic_vec cosine distance → 返回相似度"""
     settings = settings or get_settings()
+    if session.get_bind().dialect.name != "sqlite":
+        return []
     dim = _emb_dim(settings)
     if not settings.dashscope_api_key:
         log.info("DashScope key 未配置，跳过向量检索")

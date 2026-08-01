@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
 from .models import _utcnow_iso, uuid7
+from .types import MEMORY_EMBEDDING_DIMENSION, VectorStorage
 
 _JSON_DEFAULT_DICT = lambda: {}  # noqa: E731
 _JSON_DEFAULT_LIST = lambda: []  # noqa: E731
@@ -174,13 +175,23 @@ class MemoryEmbedding(Base):
     provider: Mapped[str] = mapped_column(String(32))
     model: Mapped[str] = mapped_column(String(128))
     dimension: Mapped[int] = mapped_column(Integer)
-    vector_json: Mapped[list] = mapped_column(JSON, default=_JSON_DEFAULT_LIST)
+    vector_json: Mapped[list[float]] = mapped_column(
+        VectorStorage(MEMORY_EMBEDDING_DIMENSION),
+        default=_JSON_DEFAULT_LIST,
+    )
     content_hash: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     created_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso)
 
     __table_args__ = (
         UniqueConstraint("claim_id", "model", "content_hash", name="uq_memory_embedding_version"),
+        Index(
+            "idx_memory_embeddings_vector_hnsw",
+            "vector_json",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"vector_json": "vector_cosine_ops"},
+        ).ddl_if(dialect="postgresql"),
     )
 
 

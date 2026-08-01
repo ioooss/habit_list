@@ -17,9 +17,9 @@ sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 sudo usermod -aG docker "$USER"
 
-# 持久化数据
-sudo mkdir -p /opt/habit_list_backend /var/lib/habit_list
-sudo chown -R "$USER:$USER" /opt/habit_list_backend /var/lib/habit_list
+# 部署目录、证书挑战目录与仅 root 可读的配置备份目录
+sudo mkdir -p /opt/habit_list_backend /var/www/certbot
+sudo chown -R "$USER:$USER" /opt/habit_list_backend /var/www/certbot
 
 # Certbot（等域名解析好了再跑：sudo certbot --nginx -d YOUR_DOMAIN）
 sudo apt-get install -y certbot python3-certbot-nginx

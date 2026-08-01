@@ -6,9 +6,9 @@ import io
 import pytest
 import respx
 from httpx import AsyncClient
+
 import tests  # noqa: F401
 from tests import mock_dashscope_asr, mock_dashscope_tts
-
 
 pytestmark = pytest.mark.anyio
 

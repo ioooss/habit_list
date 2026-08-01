@@ -1,3 +1,5 @@
+name: inner-terrain-local
+
 services:
   app:
     build:
@@ -8,6 +10,9 @@ services:
     env_file:
       - .env
     environment:
+      - APP_ENV=dev
+      - PROCESS_ROLE=all
+      - DATABASE_SCHEMA_MODE=auto_create
       - DATABASE_URL=sqlite+aiosqlite:////data/habit_list.db
     ports:
       - "127.0.0.1:8780:8780"
@@ -38,3 +43,4 @@ services:
       - ./logs/nginx:/var/log/nginx
     environment:
       - DOMAIN=${DEPLOY_DOMAIN:-localhost}
+      - NGINX_ENVSUBST_FILTER=^DOMAIN$

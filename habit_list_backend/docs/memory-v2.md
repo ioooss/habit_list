@@ -8,7 +8,7 @@
 |---|---:|---|
 | `MEMORY_V2_MODE` | `shadow_write` | 写用户事件、Outbox 和 Claim，不注入回复 |
 | `MEMORY_V2_EXTRACTOR_MODE` | `rules` | 只使用确定性显式表达规则，不产生模型费用 |
-| `MEMORY_V2_EMBEDDING_ENABLED` | `false` | Windows 本地使用 BM25、时间与连续性特征 |
+| `MEMORY_V2_EMBEDDING_ENABLED` | `false` | 默认不产生向量费用；启用后生产使用 pgvector HNSW |
 | `MEMORY_V2_RETRIEVAL_TOPK` | `2` | 一次回复最多选择两条长期记忆 |
 
 模式按以下顺序灰度：
@@ -69,6 +69,8 @@ final = base * confidence
 
 敏感 Claim 即使已确认，也必须同时满足用户允许主动引用和强相关匹配。无合格候选时返回空结果。
 
+生产 PostgreSQL 使用 pgvector 原生 cosine `<=>` 排序，查询保持向量列不被 `CAST` 包裹，以便 HNSW 索引参与执行计划；SQLite 测试环境对有限候选在进程内计算 cosine。向量维度当前固定为 1024，Worker 会在落库前拒绝维度不符的提供方响应。
+
 ## 用户控制 API
 
 所有路径位于 `/api/v1/memories`：
@@ -94,10 +96,10 @@ Set-Location F:\every_day_progress\habit_list\habit_list_backend
 
 测试覆盖显式抽取、证据不可编造、多值事实并存、单值冲突待确认、敏感互动偏好、受控召回、召回 Trace、用户纠正、级联硬删除、Outbox 防复活、AI 回复不进入事实证据，以及旧图缓存的用户隔离。
 
-## 上线前尚未完成
+## 公开上线前尚未完成
 
-- PostgreSQL、pgvector 和正式 Alembic 迁移；当前 SQLite 通过 `create_all` 创建 V2 新表。
-- 独立 Worker 的多实例抢占；当前由 API 进程内 APScheduler 单实例消费。
+- PostgreSQL/pgvector/Alembic 和独立 Worker 基础已经落地；仍需在目标服务器做容量、锁竞争、HNSW 执行计划、备份恢复与故障演练。
+- Outbox 已使用 `FOR UPDATE SKIP LOCKED` 支持多 Worker 抢占，但周期调度任务在扩到多 Worker 前仍需数据库 leader lock 或全链路幂等审计。
 - 正式用户身份、短期 Token、管理员 RBAC/MFA 与配置发布中心。
 - 来源记录删除、账号全量导出/删除、媒体删除和备份墓碑重放。
 - 真实数据集上的抽取准确率、引用命中率、敏感误召回率、成本与延迟评测。

@@ -3,16 +3,26 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
-import tests  # noqa: F401  fixtures
 
+import tests  # noqa: F401  fixtures
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_health_no_auth(client: AsyncClient):
-    r = await client.get("/health")
+    request = client.build_request("GET", "/health")
+    request.headers.pop("Authorization", None)
+    r = await client.send(request)
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+
+async def test_readiness_checks_database_without_auth(client: AsyncClient):
+    request = client.build_request("GET", "/ready")
+    request.headers.pop("Authorization", None)
+    response = await client.send(request)
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "service": "habit_list", "ready": True}
 
 
 async def test_auth_required(client: AsyncClient):

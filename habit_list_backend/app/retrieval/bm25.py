@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
@@ -52,14 +52,16 @@ async def search(
     if not terms:
         return []
 
-    # 1) FTS5
+    dialect_name = session.get_bind().dialect.name
+
+    # 1) FTS5（仅 SQLite；PostgreSQL 先走下方受限内存 BM25，后续迁移 tsvector）
     fts_hits: list[BM25Hit] = []
     try:
         # 用 NEAR 语法提高命中率；兼容中文用 OR 连接
         q_str = " OR ".join(f'"{_clean_term(t)}"' for t in terms if _clean_term(t))
-        if q_str:
+        if q_str and dialect_name == "sqlite":
             sql = text(
-                f"""
+                """
                 SELECT
                   f.episodic_id,
                   snippet(episodic_fts, 2, '◁', '▷', '…', 16) AS snip,

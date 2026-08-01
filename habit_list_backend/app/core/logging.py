@@ -9,7 +9,6 @@ from time import perf_counter_ns
 
 from fastapi import Request, Response
 
-
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 
 
@@ -58,7 +57,6 @@ class JsonFormatter(logging.Formatter):
 
 def trace_middleware() -> Callable:
     """给每个请求打 X-Request-ID + 执行耗时，和鉴权中间件串起来。"""
-    import time as _time
 
     async def _mw(request: Request, call_next):
         start = perf_counter_ns()

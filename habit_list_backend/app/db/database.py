@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from sqlalchemy import event
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -50,13 +51,23 @@ def get_engine(settings: Optional[Settings] = None) -> AsyncEngine:
     if p and not str(p).startswith(":"):
         p.parent.mkdir(parents=True, exist_ok=True)
 
-    engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        future=True,
-        connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
-        pool_pre_ping=True,
-    )
+    engine_options = {
+        "echo": False,
+        "future": True,
+        "pool_pre_ping": True,
+    }
+    if settings.database_is_sqlite:
+        engine_options["connect_args"] = {"check_same_thread": False}
+    else:
+        engine_options.update(
+            {
+                "pool_size": settings.database_pool_size,
+                "max_overflow": settings.database_max_overflow,
+                "pool_timeout": settings.database_pool_timeout_seconds,
+                "pool_recycle": settings.database_pool_recycle_seconds,
+            }
+        )
+    engine = create_async_engine(settings.database_url, **engine_options)
 
     # SQLite pragmas + sqlite-vss extension 加载
     if "sqlite" in settings.database_url:
@@ -77,6 +88,13 @@ def get_engine(settings: Optional[Settings] = None) -> AsyncEngine:
             ext = settings.sqlite_vss_ext_path or None
             _try_load_vss(dbapi_connection, ext)
             cur.close()
+
+    if settings.database_is_postgresql:
+        from pgvector.psycopg import register_vector_async
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _register_pgvector(dbapi_connection, _connection_record):  # noqa: ANN001
+            dbapi_connection.run_async(register_vector_async)
 
     _engines[key] = engine
     return engine
@@ -160,17 +178,33 @@ async def get_db(read_only: bool = False) -> AsyncIterator[AsyncSession]:
 
 
 async def init_db(settings: Optional[Settings] = None) -> None:
-    """建表 + 虚表(FTS5/BM25 / vss 向量 / 图谱) + 默认用户。幂等可重复执行。"""
+    """Validate or create schema, then apply local features and seed defaults."""
     settings = settings or get_settings()
     engine = get_engine(settings)
-    # 1) ORM 表
+    # Import every model before metadata inspection or create_all.
     from . import memory_models as _memory_models  # noqa: F401, WPS433 - 注册 V2 表
     from . import migrations  # noqa: WPS433 - 建虚表/默认数据
+    from .bootstrap import seed_transitional_defaults
     from .models import Base  # noqa: WPS433 - 延迟导入触发注册
 
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # 2) 虚表 + 默认数据
-        await migrations.apply(conn, settings)
+        if settings.database_schema_mode == "auto_create":
+            if not settings.is_dev:
+                raise RuntimeError("auto_create schema mode is restricted to development")
+            await conn.run_sync(Base.metadata.create_all)
+        else:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(sqlalchemy_inspect(sync_conn).get_table_names())
+            )
+            required = {"alembic_version", "users", "memory_claims", "outbox_events"}
+            missing = sorted(required - table_names)
+            if missing:
+                raise RuntimeError(
+                    "database schema is not migrated; run `python -m alembic upgrade head` "
+                    f"before startup (missing: {', '.join(missing)})"
+                )
+        if settings.database_is_sqlite:
+            await migrations.apply(conn, settings)
+        await seed_transitional_defaults(conn, settings)
 
     log.info("db init ok")

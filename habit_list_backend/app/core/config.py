@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     app_port: int = 8780
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
+    process_role: str = Field(default="all", pattern=r"^(api|worker|all)$")
+    cors_allowed_origins: str = "*"
 
     # ---- 鉴权 ----
     api_auth_token: str = Field(default="dev-only-change-me")
@@ -33,6 +35,14 @@ class Settings(BaseSettings):
 
     # ---- 数据库 ----
     database_url: str = "sqlite+aiosqlite:///./data/habit_list.db"
+    database_schema_mode: str = Field(
+        default="auto_create",
+        pattern=r"^(auto_create|alembic)$",
+    )
+    database_pool_size: int = Field(default=10, ge=1, le=100)
+    database_max_overflow: int = Field(default=20, ge=0, le=200)
+    database_pool_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    database_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86400)
     sqlite_vss_ext_path: Optional[str] = None
     fts5_tokenizer: str = "unicode61"
 
@@ -79,6 +89,11 @@ class Settings(BaseSettings):
     memory_v2_outbox_max_attempts: int = Field(default=5, ge=1, le=20)
     memory_v2_embedding_enabled: bool = False
 
+    # ---- Worker 运行时 ----
+    worker_heartbeat_path: str = "./data/worker-heartbeat.json"
+    worker_heartbeat_interval_seconds: int = Field(default=10, ge=2, le=300)
+    worker_heartbeat_stale_seconds: int = Field(default=45, ge=10, le=900)
+
     # ---- 默认用户 ----
     default_user_id: str = "01920000-0000-0000-0000-000000000001"
     default_user_locale: str = "zh-CN"
@@ -123,9 +138,49 @@ class Settings(BaseSettings):
                 raise ValueError("生产环境必须设置 DASHSCOPE_API_KEY")
         return stripped
 
+    @model_validator(mode="after")
+    def _production_database_guardrails(self):
+        if self.app_env == "prod":
+            if self.database_url.startswith("sqlite"):
+                raise ValueError("生产环境禁止使用 SQLite，必须配置 PostgreSQL")
+            if self.database_schema_mode != "alembic":
+                raise ValueError("生产环境必须使用 DATABASE_SCHEMA_MODE=alembic")
+            if self.process_role == "all":
+                raise ValueError("生产环境必须显式拆分 PROCESS_ROLE=api 或 worker")
+            if not self.cors_origins or "*" in self.cors_origins:
+                raise ValueError("生产环境必须显式配置 CORS_ALLOWED_ORIGINS")
+            weak_markers = ("dev-only", "replace_with", "change-me")
+            tokens = (self.api_auth_token, self.admin_token)
+            if any(len(token) < 32 or any(marker in token.lower() for marker in weak_markers) for token in tokens):
+                raise ValueError("生产环境 API_AUTH_TOKEN 和 ADMIN_TOKEN 必须是不同的高强度随机值")
+            if self.api_auth_token == self.admin_token:
+                raise ValueError("生产环境 API_AUTH_TOKEN 和 ADMIN_TOKEN 不能相同")
+            if not self.dashscope_api_key or "replace_with" in self.dashscope_api_key.lower():
+                raise ValueError("生产环境必须配置真实 DASHSCOPE_API_KEY")
+        if (
+            self.database_url.startswith("postgresql")
+            and self.memory_v2_embedding_enabled
+            and self.dashscope_embedding_dim != 1024
+        ):
+            raise ValueError("当前 PostgreSQL pgvector schema 固定为 1024 维")
+        return self
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "dev"
+
+    @property
+    def database_is_sqlite(self) -> bool:
+        return self.database_url.startswith("sqlite+")
+
+    @property
+    def database_is_postgresql(self) -> bool:
+        return self.database_url.startswith("postgresql+")
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Comma-separated browser origins; native mobile clients do not need CORS."""
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
     @property
     def _sqlite_local_path(self) -> Optional[str]:

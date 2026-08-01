@@ -8,6 +8,11 @@ import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import JSON, Index, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .database import Base
+
 # Python 3.12+ 有 uuid.uuid7；3.11/3.13 及以下用自定义 polyfill（时间有序，36 位 hex 字符串）
 try:  # pragma: no cover - 平台相关
     _uuid7_native = _uuid.uuid7
@@ -27,19 +32,6 @@ except AttributeError:  # pragma: no cover
 def uuid7() -> str:
     """返回标准 UUID7 字符串（36 位）。"""
     return str(_uuid7_native())
-
-from sqlalchemy import (
-    JSON,
-    Index,
-    String,
-    Text,
-    UniqueConstraint,
-    func,
-)
-from sqlalchemy.orm import Mapped, mapped_column
-
-from .database import Base
-
 
 _JSON_DEFAULT_DICT = lambda: {}  # noqa: E731
 _JSON_DEFAULT_LIST = lambda: []  # noqa: E731

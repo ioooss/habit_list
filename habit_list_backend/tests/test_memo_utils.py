@@ -1,7 +1,7 @@
 """memo_utils 单元测试（和 app.html 行为 1:1 对齐）。"""
 from __future__ import annotations
 
-from app.memory.memo_utils import detect_memo, extract_due_text, guess_importance, guess_offset
+from app.memory.memo_utils import detect_memo
 
 
 def _hit(text: str):

@@ -6,11 +6,10 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
 from sqlalchemy import select
 
 from ...db.database import get_db
-from ...db.models import Insight, Procedural, RawLedger, Semantic
+from ...db.models import Insight, RawLedger, Semantic
 from ..v1.common import ApiError, BaseSchema, current_user
 
 log = logging.getLogger("habit_list.api.insights")

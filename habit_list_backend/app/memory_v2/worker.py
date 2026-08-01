@@ -47,6 +47,7 @@ async def _claim_batch(limit: int) -> list[str]:
                     )
                     .order_by(OutboxEvent.created_at.asc())
                     .limit(limit)
+                    .with_for_update(skip_locked=True)
                 )
             ).scalars().all()
         )
@@ -184,6 +185,8 @@ async def _process_embedding(outbox: OutboxEvent, settings: Settings) -> None:
     if not vectors or not vectors[0]:
         raise ValueError("embedding provider returned no vector")
     vector = vectors[0]
+    if len(vector) != settings.dashscope_embedding_dim:
+        raise ValueError("embedding provider returned an unexpected vector dimension")
     async with get_db(read_only=False) as db:
         current_outbox = (
             await db.execute(

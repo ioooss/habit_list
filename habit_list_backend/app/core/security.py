@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from time import perf_counter_ns
 
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
@@ -20,7 +19,15 @@ from .config import get_settings
 log = logging.getLogger("habit_list")
 
 # 免鉴权白名单（纯前缀匹配）
-_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/favicon.ico", "/static")
+_PUBLIC_PREFIXES = (
+    "/health",
+    "/ready",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/favicon.ico",
+    "/static",
+)
 
 
 async def auth_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:

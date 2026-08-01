@@ -1,6 +1,6 @@
 # habit_list_backend · 内在地形后端
 
-- 技术栈：Python 3.12 · FastAPI · SQLAlchemy 2.0 async · aiosqlite · APScheduler · httpx · DashScope
+- 技术栈：Python 3.12 · FastAPI · SQLAlchemy 2.0 async · PostgreSQL/pgvector（生产）· SQLite（本地）· Alembic · APScheduler · DashScope
 - 定位：陪伴式手机 App 的后端代理 + **可信记忆引擎**（事件、Claim、Evidence、Revision、受控召回）
 - 部署：Docker + Nginx 反代到 81.70.177.186，DashScope API Key **只存服务器 `.env`，不下发客户端**
 
@@ -33,7 +33,8 @@ Content-Type: application/json
 
 | Method | 路径 | 说明 |
 |---|---|---|
-| GET  | `/health` | 健康检查（免鉴权，Docker探针也用它） |
+| GET  | `/health` | 存活检查（免鉴权，不访问数据库） |
+| GET  | `/ready` | 就绪检查（免鉴权，验证数据库连接） |
 | POST | `/chat/completions` | **共处页聊天**，SSE 流式输出，System1 三重检索 |
 | GET  | `/memories` | Memory V2 列表、搜索、状态筛选与游标分页 |
 | GET  | `/memories/{claim_id}/evidence` | 查看该记忆对应的用户原话证据 |
@@ -66,26 +67,24 @@ Content-Type: application/json
 ..\.conda\python.exe -m pytest
 ```
 
-Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.md`](docs/memory-v2.md)。默认 `MEMORY_V2_MODE=shadow_write`，只双写和抽取，不改变当前 AI 回复。
+Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.md`](docs/memory-v2.md)。默认 `MEMORY_V2_MODE=shadow_write`，只双写和抽取，不改变当前 AI 回复。生产拓扑、迁移、部署、备份底线和上线门槛见 [`docs/production-foundation.md`](docs/production-foundation.md)。
 
-## 部署到 81.70.177.186
+## 生产部署基线
 
-1. 域名解析 A 记录到 `81.70.177.186`
-2. 本地 `.env` 填好 `DEPLOY_DOMAIN` / `DEPLOY_EMAIL` / `DASHSCOPE_API_KEY` / `API_AUTH_TOKEN`
-3. 首次 SSH 进去初始化一次（docker/nginx/certbot 环境）：
+生产固定使用 PostgreSQL + pgvector、Alembic、独立 API/Worker；不会复用本地 SQLite 数据库。首次 SSH 初始化：
+
    ```bash
    bash deploy/provision_ubuntu.sh
-   # 然后登出再登录一次（docker 组生效）
    ```
-4. 本地一键部署：
+
+把 `.env.production.example` 复制为不入库的 `.env.production`，填入真实值并备份数据库后，从后端目录显式确认部署：
+
    ```bash
+   export DEPLOY_CONFIRM=inner-terrain-production
    bash deploy/deploy.sh
    ```
-5. 证书签发（certbot + Nginx）：
-   ```bash
-   ssh ubuntu@81.70.177.186
-   sudo certbot --nginx -d YOUR_DOMAIN -m YOUR_EMAIL
-   ```
+
+脚本不删除远端文件，会保留上一版生产配置，但不会自动签发 TLS 证书。完整步骤和公开上线前门槛见生产运行手册。当前固定 Bearer token 只是过渡边界，不能作为正式多用户/管理员鉴权方案。
 
 ## 项目结构
 
@@ -94,10 +93,11 @@ Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.m
 app/
 ├─ main.py
 ├─ core/       (config / security 鉴权中间件)
-├─ db/         (database 引擎 + legacy / Memory V2 models)
+├─ db/         (database 引擎 + 迁移边界 + legacy / Memory V2 models)
 ├─ providers/  (dashscope LLM/Embedding/ASR/TTS)
 ├─ retrieval/  (bm25 + sqlite-vss + NetworkX 2hop + RRF)
 ├─ memory/     (system1 / system2 / consolidate / forgetting / conflict / memo_utils)
 ├─ memory_v2/  (extractor / reconcile / service / retrieval / worker)
+├─ worker/     (独立后台进程 + 心跳健康检查)
 └─ api/v1/     (chat / memories / memos / pebbles / insights / me / speech)
 ```

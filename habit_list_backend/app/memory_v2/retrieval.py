@@ -180,28 +180,49 @@ async def retrieve_memories(
         if max_score > 0:
             lexical_scores = [max(0.0, float(score) / max_score) for score in raw]
 
-    embedding_map: dict[str, list[float]] = {}
+    semantic_scores: dict[str, float] = {}
     if query_embedding:
+        if len(query_embedding) != settings.dashscope_embedding_dim:
+            raise ValueError("query embedding dimension does not match configured dimension")
         claim_ids = [claim.claim_id for claim in claims]
-        embeddings = (
-            await session.execute(
-                select(MemoryEmbedding).where(
-                    MemoryEmbedding.claim_id.in_(claim_ids),
-                    MemoryEmbedding.model == settings.dashscope_embedding_model,
-                    MemoryEmbedding.status == "active",
+        if session.get_bind().dialect.name == "postgresql":
+            distance = MemoryEmbedding.vector_json.cosine_distance(query_embedding)
+            rows = (
+                await session.execute(
+                    select(MemoryEmbedding.claim_id, distance.label("distance"))
+                    .where(
+                        MemoryEmbedding.claim_id.in_(claim_ids),
+                        MemoryEmbedding.model == settings.dashscope_embedding_model,
+                        MemoryEmbedding.status == "active",
+                    )
+                    .order_by(distance)
+                    .limit(settings.memory_v2_candidate_limit)
                 )
-            )
-        ).scalars().all()
-        for embedding in embeddings:
-            vector = embedding.vector_json
-            if isinstance(vector, list):
-                embedding_map[embedding.claim_id] = [float(value) for value in vector]
+            ).all()
+            semantic_scores = {
+                str(row.claim_id): max(0.0, min(1.0, 1.0 - float(row.distance)))
+                for row in rows
+            }
+        else:
+            embeddings = (
+                await session.execute(
+                    select(MemoryEmbedding).where(
+                        MemoryEmbedding.claim_id.in_(claim_ids),
+                        MemoryEmbedding.model == settings.dashscope_embedding_model,
+                        MemoryEmbedding.status == "active",
+                    )
+                )
+            ).scalars().all()
+            for embedding in embeddings:
+                vector = embedding.vector_json
+                if isinstance(vector, list):
+                    semantic_scores[embedding.claim_id] = _cosine(query_embedding, vector)
 
     candidates: list[RetrievalCandidate] = []
     claims_by_id = {claim.claim_id: claim for claim in claims}
     for idx, claim in enumerate(claims):
         lexical = lexical_scores[idx]
-        semantic = _cosine(query_embedding or [], embedding_map.get(claim.claim_id, []))
+        semantic = semantic_scores.get(claim.claim_id, 0.0)
         temporal = _recency(claim.valid_from or claim.observed_at)
         if route == RetrievalRoute.TEMPORAL:
             temporal = min(1.0, temporal + 0.15)

@@ -14,10 +14,11 @@ from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import text
+from sqlalchemy import select
 
 from ..core.config import Settings, get_settings
 from ..db.database import get_db
+from ..db.models import Memo
 
 log = logging.getLogger("habit_list.memory.system2")
 
@@ -48,17 +49,26 @@ async def _job_memo_stale_scan():
     """
     now = datetime.now(timezone.utc).replace(microsecond=0)
     async with get_db(read_only=False) as db:
-        # SQLite 没有 interval 就按 offset + created_at 估算：
-        #   created_at + offset_days*86400s < now - 1h 就标过期 stale
-        await db.execute(text(
-            """
-            UPDATE memos
-               SET status='overdue_stale', status_changed_at=:now
-             WHERE status='pending'
-               AND due_offset_days IN (0,1)
-               AND datetime(created_at) < datetime(:now, '-'||(due_offset_days*24+1)||' hours')
-            """
-        ), {"now": now.isoformat().replace("+00:00", "Z")})
+        rows = (
+            await db.execute(
+                select(Memo).where(
+                    Memo.status == "pending",
+                    Memo.due_offset_days.in_([0, 1]),
+                )
+            )
+        ).scalars().all()
+        now_iso = now.isoformat().replace("+00:00", "Z")
+        for memo in rows:
+            try:
+                created = datetime.fromisoformat(memo.created_at.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            overdue_hours = int(memo.due_offset_days or 0) * 24 + 1
+            if (now - created).total_seconds() > overdue_hours * 3600:
+                memo.status = "overdue_stale"
+                memo.status_changed_at = now_iso
     return True
 
 

@@ -81,23 +81,12 @@ async def list_pebbles(
 
     buckets: dict[str, list[PebbleOut]] = {}
     order: list[str] = []
-    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     for r in rows:
         try:
             dt = datetime.fromisoformat(r.created_at.replace("Z", "+00:00"))
             key = dt.strftime("%Y-%m-%d")
-            m_d = dt.strftime("%-m/%-d") if "/" in f"{dt.month}/{dt.day}" else f"{dt.month}/{dt.day}"
-            wd = weekdays[dt.weekday()]
-            today = datetime.now(timezone.utc).date()
-            if dt.date() == today:
-                label = f"今天 · {m_d}  {wd}"
-            elif (today - dt.date()).days == 1:
-                label = f"昨天 · {m_d}  {wd}"
-            else:
-                label = f"{m_d}  {wd}"
         except Exception:  # noqa: BLE001
             key = r.created_at[:10]
-            label = key
         p = PebbleOut.model_validate({c.name: getattr(r, c.name) for c in Episodic.__table__.columns})
         buckets.setdefault(key, [])
         buckets[key].append(p)
