@@ -5,6 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+case "$REPO_ROOT" in
+  [A-Za-z]:/*)
+    if command -v cygpath >/dev/null 2>&1; then
+      REPO_ROOT="$(cygpath -u "$REPO_ROOT")"
+    elif command -v wslpath >/dev/null 2>&1; then
+      REPO_ROOT="$(wslpath -u "$REPO_ROOT")"
+    fi
+    ;;
+esac
 SERVER="${SERVER_HOST:-81.70.177.186}"
 REMOTE_USER="${SERVER_USER:-ubuntu}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/habit_list_backend}"
@@ -55,8 +64,12 @@ git -C "$REPO_ROOT" archive \
   --format=tar.gz \
   --output="$ARCHIVE_PATH" \
   "$REVISION:habit_list_backend"
-if tar -tzf "$ARCHIVE_PATH" | grep -Eq \
-  '(^|/)(tests|\.secrets)(/|$)|(^|/)\.env$|(^|/)\.env\.production$|(^|/)\.env\.integration\.example$'; then
+if ! ARCHIVE_CONTENTS="$(tar -tzf "$ARCHIVE_PATH")"; then
+  fail "could not inspect the release archive"
+fi
+if grep -Eq \
+  '(^|/)(tests|\.secrets)(/|$)|(^|/)\.env$|(^|/)\.env\.production$|(^|/)\.env\.integration\.example$' \
+  <<<"$ARCHIVE_CONTENTS"; then
   fail "release archive contains a forbidden development or secret path"
 fi
 
