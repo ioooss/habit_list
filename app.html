@@ -3351,11 +3351,20 @@ setTimeout(()=>{resize();initMist();drawScene();},1500);
 drawScene();
 
 // ============ 前后端打通：后端开关 + HTTP 封装 ============
-// BACKEND_BASE_URL = ""   → 纯本地 mock（localStorage 数组）
-// BACKEND_BASE_URL = "http://localhost:8780"  → 调真实 FastAPI
-// 改完记得改 API_AUTH_TOKEN（和 habit_list_backend/.env 的 API_AUTH_TOKEN 一致）
-const BACKEND_BASE_URL = "http://localhost:8780";
-const API_AUTH_TOKEN    = "hl_local_dev_2026_abcdef0123456789_abcdef0123456789";
+// - 直接打开文件、或由 localhost 静态服务器预览：连接本机 8780 后端。
+// - 由 staging / 正式 Web 入口托管：使用页面同源 API，鉴权由网关处理。
+// - 自动化测试可在页面脚本执行前写入 window.__INNER_TERRAIN_CONFIG__ 覆盖配置。
+const _runtimeConfig = window.__INNER_TERRAIN_CONFIG__ || {};
+const _hasRuntimeBackend = Object.prototype.hasOwnProperty.call(_runtimeConfig, 'backendBaseUrl');
+const _hasRuntimeToken = Object.prototype.hasOwnProperty.call(_runtimeConfig, 'apiAuthToken');
+const _isLocalPreview = location.protocol === 'file:' ||
+  ((location.hostname === 'localhost' || location.hostname === '127.0.0.1') && location.port !== '8780');
+const BACKEND_BASE_URL = _hasRuntimeBackend
+  ? String(_runtimeConfig.backendBaseUrl || '').replace(/\/$/, '')
+  : (_isLocalPreview ? 'http://localhost:8780' : location.origin);
+const API_AUTH_TOKEN = _hasRuntimeToken
+  ? String(_runtimeConfig.apiAuthToken || '')
+  : (_isLocalPreview ? 'hl_local_dev_2026_abcdef0123456789_abcdef0123456789' : '');
 const API_PREFIX = "/api/v1";
 function _apiFull(path){ return (BACKEND_BASE_URL||"") + API_PREFIX + path; }
 let _lastApiWarnAt = 0;

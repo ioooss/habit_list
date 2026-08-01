@@ -1,0 +1,52 @@
+name: inner-terrain-staging
+
+services:
+  migrate:
+    image: inner-terrain-backend:staging
+
+  app:
+    image: inner-terrain-backend:staging
+
+  worker:
+    image: inner-terrain-backend:staging
+
+  nginx:
+    environment:
+      STAGING_API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN is required}
+      NGINX_ENVSUBST_FILTER: ^(DOMAIN|STAGING_API_AUTH_TOKEN)$
+    volumes:
+      - ${STAGING_NGINX_TEMPLATE:-./deploy/nginx.staging.conf}:/etc/nginx/templates/default.conf.template:ro
+      - ./web/app.html:/usr/share/nginx/html/index.html:ro
+      - ./deploy/staging.htpasswd:/etc/nginx/auth/staging.htpasswd:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while sleep 21600; do nginx -s reload; done &
+        exec nginx -g 'daemon off;'
+
+  certbot-renew:
+    image: certbot/certbot:v5.4.0
+    restart: unless-stopped
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --quiet --webroot --webroot-path /var/www/certbot
+          sleep 43200 & wait $$!
+        done
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/lib/letsencrypt:/var/lib/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+    mem_limit: 192m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      nginx:
+        condition: service_started
+    networks:
+      - edge

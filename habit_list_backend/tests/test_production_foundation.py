@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -61,6 +61,24 @@ def test_production_accepts_postgresql_alembic_and_api_role():
     )
     assert settings.database_is_postgresql is True
     assert settings.database_is_sqlite is False
+
+
+def test_staging_keeps_relational_topology_but_can_bridge_the_legacy_web_client():
+    settings = Settings(
+        _env_file=None,
+        app_env="staging",
+        process_role="api",
+        database_url="postgresql+psycopg://terrain:secret@postgres/terrain_staging",
+        database_schema_mode="alembic",
+        cors_allowed_origins="https://81.70.177.186",
+        auth_mode="legacy",
+        api_auth_token="staging-test-token",
+    )
+
+    assert settings.database_is_postgresql is True
+    assert settings.database_schema_mode == "alembic"
+    assert settings.auth_mode == "legacy"
+    assert settings.app_env == "staging"
 
 
 def test_production_rejects_wildcard_cors_and_placeholder_secrets():
@@ -126,7 +144,7 @@ def test_worker_heartbeat_is_atomic_fresh_and_status_aware():
     HEARTBEAT_PATH.unlink(missing_ok=True)
     try:
         write_heartbeat(HEARTBEAT_PATH)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         assert heartbeat_is_fresh(HEARTBEAT_PATH, stale_seconds=45, now=now)
         assert not heartbeat_is_fresh(
             HEARTBEAT_PATH,

@@ -91,6 +91,10 @@ Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.m
 
 脚本只发布已提交的 Git 版本，以独立 release 目录保留上一版，但不会自动签发 TLS 证书。完整步骤和公开上线前门槛见生产运行手册。生产配置强制使用 Sign in with Apple、可撤销用户会话以及独立的管理员密码 + TOTP + RBAC；固定 Bearer token 只允许本地旧原型使用。
 
+## 手机 staging 预览
+
+项目早期的手机联调使用独立 staging，而不是伪装成生产上线。它复用 PostgreSQL、Alembic、API/Worker 分离和容器安全基线，但使用独立数据卷、独立测试用户、独立镜像与受密码保护的 HTTPS 入口；当前单文件 Web 原型仍通过 legacy token 过渡，token 只在 Nginx 内部注入。准备、部署、访问和边界见 [`docs/staging-preview.md`](docs/staging-preview.md)。
+
 ## 项目结构
 
 详见 `app/`：
