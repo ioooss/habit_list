@@ -30,6 +30,13 @@ export LETSENCRYPT_AGREE_TOS=letsencrypt-subscriber-agreement
 bash deploy/deploy_staging.sh
 ```
 
+如果服务器无法直连 Docker Hub，可先在本机 F 盘 Docker 存储准备脚本列出的官方镜像，再启用离线传输。脚本使用 `docker save/load` 保留镜像摘要，不修改服务器 DNS 或 Docker 镜像源：
+
+```bash
+export DEPLOY_PRELOAD_IMAGES=1
+bash deploy/deploy_staging.sh
+```
+
 访问凭据保存在 `.secrets/staging/access.txt`。手机访问 `https://81.70.177.186`，输入其中的用户名和密码。
 
 ## 边界

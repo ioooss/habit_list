@@ -27,6 +27,13 @@ BASE_COMPOSE_FILE="docker-compose.production.yml"
 STAGING_COMPOSE_FILE="docker-compose.staging.yml"
 CERTBOT_IMAGE="certbot/certbot:v5.4.0"
 CERT_NAME="inner-terrain-staging-ip"
+PRELOAD_IMAGES="${DEPLOY_PRELOAD_IMAGES:-0}"
+PRELOAD_IMAGE_NAMES=(
+  inner-terrain-backend:staging
+  pgvector/pgvector:0.8.2-pg17-bookworm
+  nginx:1.27-alpine
+  "$CERTBOT_IMAGE"
+)
 
 fail() {
   printf 'error: %s\n' "$1" >&2
@@ -47,7 +54,7 @@ read_secret_value() {
   return 1
 }
 
-for command_name in curl docker git scp ssh tar; do
+for command_name in curl docker git gzip scp ssh tar; do
   command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
 done
 
@@ -62,6 +69,8 @@ done
 [[ "$REMOTE_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || fail "invalid SERVER_USER"
 [[ "$REMOTE_DIR" =~ ^/opt/[A-Za-z0-9._/-]+$ && "$REMOTE_DIR" != *".."* ]] || \
   fail "REMOTE_DIR must be a path below /opt without '..'"
+[[ "$PRELOAD_IMAGES" == "0" || "$PRELOAD_IMAGES" == "1" ]] || \
+  fail "DEPLOY_PRELOAD_IMAGES must be 0 or 1"
 
 if [[ -n "$(git -C "$REPO_ROOT" status --porcelain -- habit_list_backend app.html)" ]]; then
   fail "habit_list_backend or app.html has uncommitted changes; commit the exact staging release first"
@@ -80,6 +89,7 @@ TMP_ROOT="$REPO_ROOT/.tmp/deploy"
 mkdir -p -- "$TMP_ROOT"
 ARCHIVE_PATH="$TMP_ROOT/inner-terrain-staging-$RELEASE_ID-$$.tar.gz"
 WEB_PATH="$TMP_ROOT/inner-terrain-web-$RELEASE_ID-$$.html"
+IMAGE_ARCHIVE_PATH="$TMP_ROOT/inner-terrain-images-$RELEASE_ID-$$.tar.gz"
 
 cleanup() {
   case "$ARCHIVE_PATH" in
@@ -89,6 +99,10 @@ cleanup() {
   case "$WEB_PATH" in
     "$TMP_ROOT"/*) [[ ! -f "$WEB_PATH" ]] || rm -f -- "$WEB_PATH" ;;
     *) printf 'warning: refusing to remove unexpected temporary path: %s\n' "$WEB_PATH" >&2 ;;
+  esac
+  case "$IMAGE_ARCHIVE_PATH" in
+    "$TMP_ROOT"/*) [[ ! -f "$IMAGE_ARCHIVE_PATH" ]] || rm -f -- "$IMAGE_ARCHIVE_PATH" ;;
+    *) printf 'warning: refusing to remove unexpected temporary path: %s\n' "$IMAGE_ARCHIVE_PATH" >&2 ;;
   esac
 }
 trap cleanup EXIT
@@ -123,6 +137,13 @@ grep -qx 'docker-compose.staging.yml' <<<"$ARCHIVE_CONTENTS" || \
   fail "staging compose file is missing from the release archive"
 [[ -s "$WEB_PATH" ]] || fail "could not export committed app.html"
 
+if [[ "$PRELOAD_IMAGES" == "1" ]]; then
+  for image_name in "${PRELOAD_IMAGE_NAMES[@]}"; do
+    docker image inspect "$image_name" >/dev/null 2>&1 || \
+      fail "missing local preload image: $image_name"
+  done
+fi
+
 SSH_TARGET="$REMOTE_USER@$SERVER"
 SSH_OPTIONS=(
   -i "$SSH_IDENTITY_FILE"
@@ -148,6 +169,13 @@ if [[ "${DEPLOY_DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ "$PRELOAD_IMAGES" == "1" ]]; then
+  printf 'Create a compressed, digest-preserving image bundle from local Docker storage...\n'
+  docker save "${PRELOAD_IMAGE_NAMES[@]}" | gzip -1 > "$IMAGE_ARCHIVE_PATH"
+  gzip -t "$IMAGE_ARCHIVE_PATH"
+  [[ -s "$IMAGE_ARCHIVE_PATH" ]] || fail "local image bundle is empty"
+fi
+
 printf '[2/8] Prepare an immutable staging release directory...\n'
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
   "set -eu; test ! -e '$RELEASE_DIR'; sudo install -d -o '$REMOTE_USER' -g '$REMOTE_USER' -m 0750 '$REMOTE_DIR' '$REMOTE_DIR/releases' '$RELEASE_DIR'; sudo install -d -m 0755 /var/www/certbot; sudo install -d -m 0700 /etc/letsencrypt /var/lib/letsencrypt; docker compose version >/dev/null"
@@ -157,14 +185,26 @@ scp "${SSH_OPTIONS[@]}" "$ARCHIVE_PATH" "$SSH_TARGET:$RELEASE_DIR/.bundle.tar.gz
 scp "${SSH_OPTIONS[@]}" "$WEB_PATH" "$SSH_TARGET:$RELEASE_DIR/.app.html.next"
 scp "${SSH_OPTIONS[@]}" "$ENV_FILE" "$SSH_TARGET:$RELEASE_DIR/.env.staging.next"
 scp "${SSH_OPTIONS[@]}" "$HTPASSWD_FILE" "$SSH_TARGET:$RELEASE_DIR/.staging.htpasswd.next"
+if [[ "$PRELOAD_IMAGES" == "1" ]]; then
+  scp "${SSH_OPTIONS[@]}" "$IMAGE_ARCHIVE_PATH" "$SSH_TARGET:$RELEASE_DIR/.images.tar.gz"
+fi
 
 printf '[4/8] Extract and validate the release on the server...\n'
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
   "set -eu; cd '$RELEASE_DIR'; tar -xzf .bundle.tar.gz; install -d -m 0755 web; chmod 0644 .app.html.next; mv .app.html.next web/app.html; chmod 0600 .env.staging.next; mv .env.staging.next .env.staging; chmod 0644 .staging.htpasswd.next; mv .staging.htpasswd.next deploy/staging.htpasswd; rm -f -- .bundle.tar.gz; export APP_ENV_FILE=.env.staging; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' config --quiet"
+if [[ "$PRELOAD_IMAGES" == "1" ]]; then
+  ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
+    "set -eu; cd '$RELEASE_DIR'; gzip -t .images.tar.gz; gzip -dc .images.tar.gz | docker load; rm -f -- .images.tar.gz; docker image inspect inner-terrain-backend:staging pgvector/pgvector:0.8.2-pg17-bookworm nginx:1.27-alpine '$CERTBOT_IMAGE' >/dev/null"
+fi
 
 printf '[5/8] Build and start the isolated staging stack behind an HTTP bootstrap gate...\n'
-ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-  "set -eu; cd '$RELEASE_DIR'; export APP_ENV_FILE=.env.staging; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' build app; export STAGING_NGINX_TEMPLATE=./deploy/nginx.staging.bootstrap.conf; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' up -d --no-build --remove-orphans"
+if [[ "$PRELOAD_IMAGES" == "1" ]]; then
+  ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
+    "set -eu; cd '$RELEASE_DIR'; export APP_ENV_FILE=.env.staging; docker image inspect inner-terrain-backend:staging >/dev/null; export STAGING_NGINX_TEMPLATE=./deploy/nginx.staging.bootstrap.conf; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' up -d --no-build --pull never --remove-orphans"
+else
+  ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
+    "set -eu; cd '$RELEASE_DIR'; export APP_ENV_FILE=.env.staging; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' build app; export STAGING_NGINX_TEMPLATE=./deploy/nginx.staging.bootstrap.conf; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' up -d --no-build --remove-orphans"
+fi
 
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
   "set -eu; for attempt in \$(seq 1 40); do if curl -fsS http://127.0.0.1:18780/ready >/dev/null; then exit 0; fi; if [ \"\$attempt\" -eq 40 ]; then cd '$RELEASE_DIR'; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' ps; exit 1; fi; sleep 3; done"
