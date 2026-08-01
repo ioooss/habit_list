@@ -1,0 +1,31 @@
+# 凭据与本地配置
+.env
+.env.local
+.env.*.local
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+node_modules/
+.conda/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 本地数据库与项目专属依赖缓存
+habit_list_backend/data/*.db
+habit_list_backend/data/*.db-*
+habit_list_backend/data/pip-cache/
+habit_list_backend/data/pip-tmp/
+
+# 调试截图 / 临时文件
+tmp/
+temp/
+*.log
+screenshots/

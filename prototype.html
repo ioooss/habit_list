@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>内在地形 · Inner Terrain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Noto+Serif+SC:wght@300;400;500;600&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-deep:#080b16;
+    --bg-mid:#10142a;
+    --bg-soft:#1a1f3a;
+    --glass:rgba(255,255,255,0.045);
+    --glass-strong:rgba(255,255,255,0.08);
+    --glass-border:rgba(255,255,255,0.14);
+    --glass-hi:rgba(255,255,255,0.22);
+    --text:#eae6dd;
+    --text-dim:#8a8576;
+    --text-faint:#4a4838;
+    --warm:#e8a87c;
+    --glow:#f4d35e;
+    --cold:#6b8cae;
+    --neutral:#c4b5a0;
+    --serif-cn:'Noto Serif SC',serif;
+    --serif-en:'Cormorant Garamond',serif;
+    --sans:'Noto Sans SC',sans-serif;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden}
+  body{
+    font-family:var(--sans);
+    color:var(--text);
+    background:var(--bg-deep);
+    position:relative;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ===== 背景地形氛围 ===== */
+  .terrain-bg{
+    position:fixed;inset:0;z-index:0;overflow:hidden;
+    background:
+      radial-gradient(ellipse 80% 60% at 20% 30%, rgba(107,140,174,0.18), transparent 60%),
+      radial-gradient(ellipse 70% 50% at 80% 70%, rgba(232,168,124,0.14), transparent 60%),
+      radial-gradient(ellipse 60% 80% at 50% 100%, rgba(244,211,94,0.08), transparent 70%),
+      linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-mid) 60%, var(--bg-soft) 100%);
+  }
+  .terrain-bg::before{
+    content:"";position:absolute;inset:0;
+    background-image:
+      radial-gradient(circle at 30% 40%, rgba(255,255,255,0.025) 0%, transparent 40%),
+      radial-gradient(circle at 70% 60%, rgba(255,255,255,0.02) 0%, transparent 35%);
+    filter:blur(40px);
+  }
+  /* 噪声纹理 */
+  .terrain-bg::after{
+    content:"";position:absolute;inset:0;opacity:0.4;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* 抽象地形层 —— 用模糊椭圆模拟地貌 */
+  .terrain-shapes{
+    position:fixed;inset:0;z-index:1;pointer-events:none;
+  }
+  .terrain-shapes span{
+    position:absolute;border-radius:50%;filter:blur(60px);opacity:0.5;
+    animation:drift 24s ease-in-out infinite;
+  }
+  .terrain-shapes span:nth-child(1){
+    width:380px;height:280px;left:-80px;top:18%;
+    background:radial-gradient(circle,rgba(107,140,174,0.5),transparent 70%);
+  }
+  .terrain-shapes span:nth-child(2){
+    width:320px;height:240px;right:-60px;top:55%;
+    background:radial-gradient(circle,rgba(232,168,124,0.4),transparent 70%);
+    animation-delay:-8s;
+  }
+  .terrain-shapes span:nth-child(3){
+    width:260px;height:200px;left:35%;bottom:-40px;
+    background:radial-gradient(circle,rgba(244,211,94,0.25),transparent 70%);
+    animation-delay:-14s;
+  }
+  @keyframes drift{
+    0%,100%{transform:translate(0,0) scale(1)}
+    50%{transform:translate(30px,-20px) scale(1.08)}
+  }
+
+  /* 发光点 canvas */
+  #terrainCanvas{position:fixed;inset:0;z-index:2;pointer-events:none}
+
+  /* ===== 顶部 ===== */
+  .topbar{
+    position:fixed;top:0;left:0;right:0;z-index:10;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    padding:32px 44px 0;
+  }
+  .brand{
+    display:flex;flex-direction:column;gap:2px;
+  }
+  .brand .en{
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:13px;letter-spacing:0.18em;color:var(--text-dim);
+  }
+  .brand .cn{
+    font-family:var(--serif-cn);font-weight:400;font-size:19px;
+    letter-spacing:0.25em;color:var(--text);
+  }
+  .letter-btn{
+    width:46px;height:46px;border-radius:50%;
+    background:var(--glass);border:1px solid var(--glass-border);
+    backdrop-filter:blur(20px) saturate(1.2);-webkit-backdrop-filter:blur(20px) saturate(1.2);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:all .4s cubic-bezier(.2,.8,.2,1);
+    position:relative;
+  }
+  .letter-btn:hover{
+    background:var(--glass-strong);transform:translateY(-2px);
+    box-shadow:0 8px 32px rgba(232,168,124,0.15);
+  }
+  .letter-btn svg{width:18px;height:18px;stroke:var(--warm);fill:none;stroke-width:1.2}
+  .letter-btn .dot{
+    position:absolute;top:8px;right:9px;width:6px;height:6px;border-radius:50%;
+    background:var(--glow);box-shadow:0 0 8px var(--glow);
+    animation:pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.6}50%{opacity:1}}
+
+  /* ===== 主内容：习惯卡片不对称布局 ===== */
+  .stage{
+    position:relative;z-index:5;
+    height:100vh;
+    padding:120px 44px 110px;
+    display:grid;
+    grid-template-columns:repeat(12,1fr);
+    grid-template-rows:repeat(6,1fr);
+    gap:18px;
+  }
+
+  .habit{
+    background:var(--glass);
+    border:1px solid var(--glass-border);
+    backdrop-filter:blur(24px) saturate(1.3);
+    -webkit-backdrop-filter:blur(24px) saturate(1.3);
+    border-radius:18px;
+    padding:22px 24px;
+    cursor:pointer;
+    position:relative;overflow:hidden;
+    transition:all .5s cubic-bezier(.2,.8,.2,1);
+    display:flex;flex-direction:column;justify-content:space-between;
+    box-shadow:
+      0 8px 40px rgba(0,0,0,0.3),
+      inset 0 1px 0 rgba(255,255,255,0.12),
+      inset 0 -1px 0 rgba(0,0,0,0.2);
+  }
+  /* 玻璃高光 */
+  .habit::before{
+    content:"";position:absolute;top:0;left:0;right:0;height:50%;
+    background:linear-gradient(180deg,rgba(255,255,255,0.06),transparent);
+    pointer-events:none;border-radius:18px 18px 0 0;
+  }
+  .habit:hover{
+    transform:translateY(-4px);
+    border-color:var(--glass-hi);
+    box-shadow:
+      0 16px 50px rgba(0,0,0,0.4),
+      0 0 0 1px rgba(232,168,124,0.15),
+      inset 0 1px 0 rgba(255,255,255,0.18);
+  }
+  .habit .h-top{
+    display:flex;justify-content:space-between;align-items:flex-start;
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:12px;letter-spacing:0.15em;color:var(--text-dim);
+  }
+  .habit .h-name{
+    font-family:var(--serif-cn);font-weight:400;font-size:22px;
+    color:var(--text);letter-spacing:0.06em;line-height:1.4;
+  }
+  .habit .h-note{
+    font-family:var(--serif-cn);font-weight:300;font-size:13px;
+    color:var(--text-dim);font-style:italic;letter-spacing:0.05em;
+    margin-top:6px;
+  }
+  .habit .h-bottom{
+    display:flex;justify-content:space-between;align-items:flex-end;
+    margin-top:14px;
+  }
+  .habit .h-count{
+    font-family:var(--serif-en);font-size:28px;font-weight:300;
+    color:var(--warm);line-height:1;
+  }
+  .habit .h-count em{
+    font-size:11px;font-style:normal;color:var(--text-faint);
+    letter-spacing:0.2em;margin-left:4px;
+  }
+  .habit .h-today{
+    font-family:var(--serif-cn);font-size:11px;letter-spacing:0.2em;
+    color:var(--text-faint);
+  }
+  .habit .h-today.done{color:var(--glow)}
+
+  /* 不对称布局 —— 错落排布 */
+  .h1{grid-column:1/5;grid-row:1/4}
+  .h2{grid-column:6/9;grid-row:1/3}
+  .h3{grid-column:9/13;grid-row:2/5}
+  .h4{grid-column:1/4;grid-row:4/7}
+  .h5{grid-column:5/9;grid-row:4/7}
+  .h6{grid-column:10/13;grid-row:5/7}
+
+  /* 不同卡片用不同强调 */
+  .h1 .h-name{font-size:26px}
+  .h3{background:rgba(232,168,124,0.06);border-color:rgba(232,168,124,0.18)}
+  .h3 .h-count{color:var(--glow)}
+
+  /* 引言卡（非习惯，杂志感） */
+  .quote-card{
+    grid-column:5/9;grid-row:1/2;
+    display:flex;align-items:center;
+    font-family:var(--serif-cn);font-weight:300;font-style:italic;
+    font-size:14px;color:var(--text-dim);letter-spacing:0.1em;
+    line-height:1.8;padding:0 8px;
+  }
+  .quote-card .line{
+    width:24px;height:1px;background:var(--text-faint);margin-right:14px;
+  }
+
+  /* ===== 底部状态栏 ===== */
+  .bottombar{
+    position:fixed;bottom:0;left:0;right:0;z-index:10;
+    padding:0 44px 28px;
+    display:flex;justify-content:space-between;align-items:flex-end;
+  }
+  .total-strokes{
+    display:flex;flex-direction:column;gap:4px;
+  }
+  .total-strokes .label{
+    font-family:var(--serif-en);font-style:italic;font-size:11px;
+    letter-spacing:0.2em;color:var(--text-faint);
+  }
+  .total-strokes .num{
+    font-family:var(--serif-en);font-size:34px;font-weight:300;
+    color:var(--text);line-height:1;
+  }
+  .total-strokes .num em{
+    font-family:var(--serif-cn);font-style:normal;font-size:12px;
+    color:var(--text-dim);letter-spacing:0.2em;margin-left:8px;
+  }
+  .meta-right{
+    text-align:right;
+    font-family:var(--serif-en);font-style:italic;font-size:12px;
+    color:var(--text-faint);letter-spacing:0.15em;line-height:1.8;
+  }
+  .meta-right .week{color:var(--warm)}
+
+  /* ===== 心情选择浮层 ===== */
+  .mood-picker{
+    position:fixed;z-index:50;
+    background:var(--glass-strong);
+    border:1px solid var(--glass-hi);
+    backdrop-filter:blur(30px) saturate(1.4);
+    -webkit-backdrop-filter:blur(30px) saturate(1.4);
+    border-radius:24px;padding:18px 14px;
+    display:none;align-items:center;gap:6px;
+    box-shadow:0 16px 50px rgba(0,0,0,0.5);
+  }
+  .mood-picker.show{display:flex;animation:floatIn .4s cubic-bezier(.2,.8,.2,1)}
+  @keyframes floatIn{from{opacity:0;transform:translateY(10px) scale(.95)}to{opacity:1;transform:none}}
+  .mood-picker .hint{
+    font-family:var(--serif-cn);font-size:11px;color:var(--text-dim);
+    letter-spacing:0.2em;margin-right:8px;padding-left:6px;
+  }
+  .mood-picker .emoji{
+    width:38px;height:38px;border-radius:50%;display:flex;
+    align-items:center;justify-content:center;font-size:18px;cursor:pointer;
+    transition:all .3s;background:transparent;border:1px solid transparent;
+  }
+  .mood-picker .emoji:hover{
+    background:var(--glass);border-color:var(--glass-border);
+    transform:scale(1.15)
+  }
+
+  /* ===== 信件视图 ===== */
+  .letter{
+    position:fixed;inset:0;z-index:100;
+    background:radial-gradient(ellipse at 50% 30%, rgba(20,24,42,0.92), rgba(8,11,22,0.98));
+    backdrop-filter:blur(40px);-webkit-backdrop-filter:blur(40px);
+    display:none;overflow-y:auto;
+    animation:letterIn .8s cubic-bezier(.2,.8,.2,1);
+  }
+  .letter.show{display:block}
+  @keyframes letterIn{from{opacity:0}to{opacity:1}}
+
+  .letter-inner{
+    max-width:680px;margin:0 auto;padding:120px 56px 120px;
+    position:relative;
+  }
+  .letter-close{
+    position:fixed;top:32px;right:44px;
+    width:42px;height:42px;border-radius:50%;
+    background:var(--glass);border:1px solid var(--glass-border);
+    backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;color:var(--text-dim);font-size:18px;
+    transition:all .3s;
+  }
+  .letter-close:hover{color:var(--warm);transform:rotate(90deg)}
+
+  .letter .stamp{
+    font-family:var(--serif-en);font-style:italic;font-size:12px;
+    letter-spacing:0.3em;color:var(--text-faint);
+    text-transform:uppercase;margin-bottom:8px;
+  }
+  .letter .to{
+    font-family:var(--serif-cn);font-weight:300;font-size:15px;
+    color:var(--text-dim);letter-spacing:0.15em;margin-bottom:48px;
+  }
+  .letter h1{
+    font-family:var(--serif-cn);font-weight:400;font-size:30px;
+    color:var(--text);letter-spacing:0.1em;line-height:1.5;
+    margin-bottom:56px;
+  }
+  .letter p{
+    font-family:var(--serif-cn);font-weight:300;font-size:17px;
+    line-height:2.1;color:var(--text);letter-spacing:0.04em;
+    margin-bottom:28px;
+  }
+  .letter p.dim{color:var(--text-dim);font-size:15px}
+  .letter p .em{color:var(--warm);font-style:normal}
+  .letter p .glow{color:var(--glow)}
+
+  .letter .divider{
+    display:flex;align-items:center;gap:14px;margin:48px 0;
+    color:var(--text-faint);
+  }
+  .letter .divider::before,.letter .divider::after{
+    content:"";flex:1;height:1px;background:var(--text-faint);opacity:.3;
+  }
+  .letter .divider span{
+    font-family:var(--serif-en);font-style:italic;font-size:11px;letter-spacing:0.3em;
+  }
+
+  .letter .signature{
+    margin-top:64px;text-align:right;
+  }
+  .letter .signature .s1{
+    font-family:var(--serif-cn);font-weight:300;font-style:italic;
+    font-size:14px;color:var(--text-dim);letter-spacing:0.1em;
+  }
+  .letter .signature .s2{
+    font-family:var(--serif-en);font-style:italic;font-size:24px;
+    color:var(--warm);margin-top:6px;letter-spacing:0.05em;
+  }
+
+  .letter .discoveries{
+    margin-top:48px;padding:28px;
+    background:var(--glass);border:1px solid var(--glass-border);
+    border-radius:14px;backdrop-filter:blur(20px);
+  }
+  .letter .discoveries .dt{
+    font-family:var(--serif-en);font-style:italic;font-size:11px;
+    letter-spacing:0.3em;color:var(--text-faint);margin-bottom:14px;
+  }
+  .letter .discoveries p{
+    font-size:15px;line-height:1.9;margin-bottom:14px;
+  }
+  .letter .discoveries p:last-child{margin-bottom:0}
+
+  /* 涟漪 */
+  .ripple{
+    position:fixed;z-index:3;pointer-events:none;
+    width:20px;height:20px;border-radius:50%;
+    border:1px solid var(--warm);
+    animation:ripple 1.4s cubic-bezier(.2,.8,.2,1) forwards;
+  }
+  @keyframes ripple{
+    0%{transform:translate(-50%,-50%) scale(0);opacity:.8}
+    100%{transform:translate(-50%,-50%) scale(8);opacity:0}
+  }
+
+  /* 首屏提示 */
+  .hint-toast{
+    position:fixed;bottom:90px;left:50%;transform:translateX(-50%);
+    z-index:20;
+    font-family:var(--serif-cn);font-size:12px;color:var(--text-dim);
+    letter-spacing:0.25em;
+    background:var(--glass);border:1px solid var(--glass-border);
+    backdrop-filter:blur(20px);padding:10px 22px;border-radius:30px;
+    animation:hintFade 5s ease forwards;
+  }
+  @keyframes hintFade{
+    0%{opacity:0;transform:translate(-50%,10px)}
+    15%,75%{opacity:1;transform:translate(-50%,0)}
+    100%{opacity:0;transform:translate(-50%,-10px);visibility:hidden}
+  }
+
+  @media (max-width:780px){
+    .stage{padding:110px 20px 100px;gap:12px;
+      grid-template-columns:repeat(6,1fr);grid-template-rows:repeat(8,1fr)}
+    .h1{grid-column:1/7;grid-row:1/3}
+    .h2{grid-column:1/4;grid-row:3/5}
+    .h3{grid-column:4/7;grid-row:3/5}
+    .h4{grid-column:1/4;grid-row:5/7}
+    .h5{grid-column:4/7;grid-row:5/7}
+    .h6{grid-column:1/7;grid-row:7/9}
+    .quote-card{display:none}
+    .topbar,.bottombar{padding-left:20px;padding-right:20px}
+    .letter-inner{padding:90px 28px}
+  }
+</style>
+</head>
+<body>
+
+<div class="terrain-bg"></div>
+<div class="terrain-shapes">
+  <span></span><span></span><span></span>
+</div>
+<canvas id="terrainCanvas"></canvas>
+
+<!-- 顶部 -->
+<div class="topbar">
+  <div class="brand">
+    <div class="en">Inner Terrain</div>
+    <div class="cn">内 在 地 形</div>
+  </div>
+  <div class="letter-btn" id="openLetter" title="这周的信">
+    <svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="M4 6l8 7 8-7"/></svg>
+    <span class="dot"></span>
+  </div>
+</div>
+
+<!-- 主舞台 -->
+<div class="stage">
+  <div class="quote-card">
+    <span class="line"></span>
+    地形不在乎密度，只在乎你还在。
+  </div>
+
+  <div class="habit h1" data-name="阅读" data-note="今晚读了三页，也算">
+    <div>
+      <div class="h-top"><span>No. 01</span><span>reading</span></div>
+      <div class="h-name">阅 读</div>
+      <div class="h-note">今晚读了三页，也算</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">47<em>笔</em></div>
+      <div class="h-today done">今日 · 已落笔</div>
+    </div>
+  </div>
+
+  <div class="habit h2" data-name="冥想" data-note="五分钟数息">
+    <div>
+      <div class="h-top"><span>No. 02</span><span>stillness</span></div>
+      <div class="h-name">冥 想</div>
+      <div class="h-note">五分钟数息</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">31<em>笔</em></div>
+      <div class="h-today">今日 · 未记录</div>
+    </div>
+  </div>
+
+  <div class="habit h3" data-name="散步" data-note="楼下转一圈">
+    <div>
+      <div class="h-top"><span>No. 03</span><span>walking</span></div>
+      <div class="h-name">散 步</div>
+      <div class="h-note">楼下转一圈</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">68<em>笔</em></div>
+      <div class="h-today done">今日 · 已落笔</div>
+    </div>
+  </div>
+
+  <div class="habit h4" data-name="喝水" data-note="今天够了吗">
+    <div>
+      <div class="h-top"><span>No. 04</span><span>water</span></div>
+      <div class="h-name">喝 水</div>
+      <div class="h-note">今天够了吗</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">122<em>笔</em></div>
+      <div class="h-today done">今日 · 已落笔</div>
+    </div>
+  </div>
+
+  <div class="habit h5" data-name="写日记" data-note="一句话也好">
+    <div>
+      <div class="h-top"><span>No. 05</span><span>journal</span></div>
+      <div class="h-name">写 日 记</div>
+      <div class="h-note">一句话也好</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">54<em>笔</em></div>
+      <div class="h-today">今日 · 未记录</div>
+    </div>
+  </div>
+
+  <div class="habit h6" data-name="早睡" data-note="不勉强">
+    <div>
+      <div class="h-top"><span>No. 06</span><span>rest</span></div>
+      <div class="h-name">早 睡</div>
+      <div class="h-note">不勉强</div>
+    </div>
+    <div class="h-bottom">
+      <div class="h-count">19<em>笔</em></div>
+      <div class="h-today">今日 · 未记录</div>
+    </div>
+  </div>
+</div>
+
+<!-- 底部 -->
+<div class="bottombar">
+  <div class="total-strokes">
+    <div class="label">total strokes · 累计</div>
+    <div class="num">341<em>笔 落 在 地 形 上</em></div>
+  </div>
+  <div class="meta-right">
+    week 30 · <span class="week">七月尾声</span><br>
+    terrain is soft tonight
+  </div>
+</div>
+
+<!-- 心情选择 -->
+<div class="mood-picker" id="moodPicker">
+  <span class="hint">今日 ·</span>
+  <div class="emoji" data-mood="cold">🌫️</div>
+  <div class="emoji" data-mood="neutral">🍂</div>
+  <div class="emoji" data-mood="warm">🍊</div>
+  <div class="emoji" data-mood="glow">✨</div>
+  <div class="emoji" data-mood="skip">—</div>
+</div>
+
+<!-- 信件 -->
+<div class="letter" id="letter">
+  <div class="letter-close" id="closeLetter">×</div>
+  <div class="letter-inner">
+    <div class="stamp">week 30 · a letter</div>
+    <div class="to">致 这一周的你 ——</div>
+    <h1>地形，在七月的尾声<br>慢慢变暖了一些。</h1>
+
+    <p>这一周，你在地形上落下了 <span class="em">11 笔</span>。比上周多了三笔，但我感觉到的不是"更多"，而是<span class="em">更稳</span>——你不再集中在某一天补齐，而是分散在每天的某个时刻，像潮水按时回来。</p>
+
+    <p class="dim">其中周二没有记录。那天你的最后一条消息发在工作群，时间是 23:47。我想那不是你不想记录，是你已经没有力气。这很正常。地形没有因此变暗，它只是在那里，等了你一天。</p>
+
+    <div class="divider"><span>what i noticed</span></div>
+
+    <p>我注意到，你这周<span class="glow">冥想</span>的那几天，地形总是亮一点。好像那五分钟的安静，会渗进别的时间里——你在冥想的日子里，散步和阅读也都更愿意发生。</p>
+
+    <p class="dim">这不是规律，是一种<span class="em">倾向</span>。我不确定它会不会持续，但它很美。</p>
+
+    <div class="discoveries">
+      <div class="dt">this week's terrain features · 本周地貌特征</div>
+      <p>· <span class="em">回暖周</span> —— 断了一段时间的「早睡」这周重新出现两次，地形上浮现融雪后的嫩绿。</p>
+      <p>· <span class="em">夜行纹理</span> —— 有四笔记录发生在 22:00 之后，地形深处出现了星光。</p>
+      <p>· 没有「完美」，但有一片<span class="glow">活的</span>地。</p>
+    </div>
+
+    <p style="margin-top:48px">下周如果再忙，阅读可以只读一页，也算。<br>散步可以只是走到窗边，也算。<br>地形不在乎密度，只在乎你还在。</p>
+
+    <div class="signature">
+      <div class="s1">—— 你的地形，写于七月最后一个安静的夜晚</div>
+      <div class="s2">Inner Terrain</div>
+    </div>
+  </div>
+</div>
+
+<div class="hint-toast">轻 触 卡 片 · 落 下 一 笔</div>
+
+<script>
+  // ===== 发光点系统：emoji 化作地形上的星 =====
+  const canvas = document.getElementById('terrainCanvas');
+  const ctx = canvas.getContext('2d');
+  let W, H, DPR;
+  function resize(){
+    DPR = window.devicePixelRatio || 1;
+    W = canvas.width = window.innerWidth * DPR;
+    H = canvas.height = window.innerHeight * DPR;
+    canvas.style.width = window.innerWidth+'px';
+    canvas.style.height = window.innerHeight+'px';
+    ctx.scale(DPR, DPR);
+  }
+  window.addEventListener('resize', ()=>{resize()});
+  resize();
+
+  const moodColors = {
+    cold:'#6b8cae', neutral:'#c4b5a0', warm:'#e8a87c', glow:'#f4d35e', skip:'#5a5848'
+  };
+
+  // 初始发光点（用户过去留下的痕迹）
+  const dots = [];
+  function seedDots(){
+    const presets = [
+      {x:.15,y:.25,m:'warm'},{x:.22,y:.6,m:'glow'},{x:.4,y:.2,m:'neutral'},
+      {x:.55,y:.45,m:'warm'},{x:.7,y:.3,m:'glow'},{x:.82,y:.55,m:'cold'},
+      {x:.3,y:.75,m:'warm'},{x:.5,y:.8,m:'neutral'},{x:.65,y:.65,m:'glow'},
+      {x:.88,y:.25,m:'warm'},{x:.1,y:.5,m:'cold'},{x:.45,y:.35,m:'warm'},
+      {x:.6,y:.15,m:'glow'},{x:.75,y:.75,m:'neutral'},{x:.25,y:.4,m:'warm'},
+      {x:.9,y:.6,m:'glow'},{x:.38,y:.55,m:'cold'},{x:.58,y:.7,m:'warm'},
+    ];
+    presets.forEach(p=>{
+      dots.push({
+        x: p.x * window.innerWidth,
+        y: p.y * window.innerHeight,
+        r: 1.5 + Math.random()*2,
+        mood: p.m,
+        phase: Math.random()*Math.PI*2,
+        speed: 0.5 + Math.random()*0.8,
+        born: 1
+      });
+    });
+  }
+  seedDots();
+
+  function addDot(x, y, mood){
+    dots.push({
+      x, y, r:2, mood:mood||'warm',
+      phase:Math.random()*Math.PI*2, speed:0.6,
+      born:0
+    });
+  }
+
+  let t = 0;
+  function draw(){
+    ctx.clearRect(0,0,window.innerWidth, window.innerHeight);
+    t += 0.01;
+    dots.forEach(d=>{
+      // 生长动画
+      if(d.born < 1) d.born = Math.min(1, d.born + 0.03);
+      const breathe = 0.6 + 0.4 * Math.sin(t * d.speed + d.phase);
+      const r = d.r * d.born * (0.8 + breathe*0.4);
+      const color = moodColors[d.mood] || moodColors.warm;
+
+      // 外层光晕
+      const grad = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, r*14);
+      grad.addColorStop(0, hexToRgba(color, 0.5 * d.born));
+      grad.addColorStop(0.3, hexToRgba(color, 0.18 * d.born));
+      grad.addColorStop(1, hexToRgba(color, 0));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, r*14, 0, Math.PI*2);
+      ctx.fill();
+
+      // 核心点
+      ctx.fillStyle = hexToRgba(color, 0.95 * d.born);
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, r, 0, Math.PI*2);
+      ctx.fill();
+
+      // 中心高光
+      ctx.fillStyle = `rgba(255,255,255,${0.7*d.born*breathe})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, r*0.4, 0, Math.PI*2);
+      ctx.fill();
+    });
+    requestAnimationFrame(draw);
+  }
+  function hexToRgba(hex, a){
+    const n = parseInt(hex.slice(1),16);
+    return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+  }
+  draw();
+
+  // ===== 习惯卡片交互 =====
+  const habits = document.querySelectorAll('.habit');
+  const moodPicker = document.getElementById('moodPicker');
+  let pendingHabit = null;
+  let pendingPos = null;
+
+  habits.forEach(h=>{
+    h.addEventListener('click', (e)=>{
+      const rect = h.getBoundingClientRect();
+      const cx = rect.left + rect.width/2;
+      const cy = rect.top + rect.height/2;
+
+      // 涟漪
+      const ripple = document.createElement('div');
+      ripple.className = 'ripple';
+      ripple.style.left = cx+'px';
+      ripple.style.top = cy+'px';
+      document.body.appendChild(ripple);
+      setTimeout(()=>ripple.remove(), 1400);
+
+      // 在地形上加一个发光点（卡片中心附近偏移）
+      const dx = cx + (Math.random()-0.5)*60;
+      const dy = cy + (Math.random()-0.5)*60;
+      pendingPos = {x:dx, y:dy};
+      pendingHabit = h;
+
+      // 心情选择浮在卡片上方
+      moodPicker.style.left = (cx - 130)+'px';
+      moodPicker.style.top = (rect.top - 70)+'px';
+      moodPicker.classList.add('show');
+    });
+  });
+
+  moodPicker.querySelectorAll('.emoji').forEach(em=>{
+    em.addEventListener('click', ()=>{
+      const mood = em.dataset.mood;
+      if(pendingPos) addDot(pendingPos.x, pendingPos.y, mood);
+      if(pendingHabit){
+        const today = pendingHabit.querySelector('.h-today');
+        today.classList.add('done');
+        today.textContent = '今日 · 已落笔';
+        // 笔触数 +1
+        const countEl = pendingHabit.querySelector('.h-count');
+        const num = parseInt(countEl.firstChild.textContent);
+        countEl.firstChild.textContent = (num+1);
+        // 总数 +1
+        const total = document.querySelector('.total-strokes .num');
+        const tnum = parseInt(total.firstChild.textContent);
+        total.firstChild.textContent = (tnum+1);
+      }
+      moodPicker.classList.remove('show');
+      pendingHabit = null; pendingPos = null;
+    });
+  });
+
+  // 点击空白关闭心情选择
+  document.addEventListener('click', (e)=>{
+    if(!e.target.closest('.habit') && !e.target.closest('.mood-picker')){
+      moodPicker.classList.remove('show');
+    }
+  });
+
+  // ===== 信件开关 =====
+  document.getElementById('openLetter').addEventListener('click', ()=>{
+    document.getElementById('letter').classList.add('show');
+  });
+  document.getElementById('closeLetter').addEventListener('click', ()=>{
+    document.getElementById('letter').classList.remove('show');
+  });
+</script>
+</body>
+</html>

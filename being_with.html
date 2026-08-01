@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>共处 · Being With</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-deep:#06080f;
+    --bg-mid:#0c1020;
+    --light-warm:#e8a87c;
+    --light-glow:#f4d35e;
+    --light-soft:#c97b5f;
+    --text:#e8e4db;
+    --text-dim:#7a7568;
+    --text-faint:#3a3830;
+    --serif-cn:'Noto Serif SC',serif;
+    --serif-en:'Cormorant Garamond',serif;
+  }
+
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:var(--bg-deep)}
+  body{
+    font-family:var(--serif-cn);
+    color:var(--text);
+    position:relative;
+    -webkit-font-smoothing:antialiased;
+    user-select:none;
+  }
+
+  /* Canvas 雾与光 */
+  #scene{position:fixed;inset:0;z-index:1}
+
+  /* 噪声纹理覆盖 */
+  .grain{
+    position:fixed;inset:0;z-index:2;pointer-events:none;
+    opacity:0.35;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* 顶部轻标 */
+  .topmark{
+    position:fixed;top:36px;left:0;right:0;z-index:10;
+    text-align:center;pointer-events:none;
+  }
+  .topmark .en{
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:12px;letter-spacing:0.4em;color:var(--text-faint);
+    text-transform:uppercase;
+  }
+  .topmark .cn{
+    font-family:var(--serif-cn);font-weight:300;font-size:14px;
+    letter-spacing:0.5em;color:var(--text-dim);margin-top:6px;
+  }
+
+  /* 状态提示（极轻） */
+  .state-hint{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    z-index:5;pointer-events:none;
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:11px;letter-spacing:0.35em;color:var(--text-faint);
+    text-transform:uppercase;
+    opacity:0;transition:opacity 1.2s ease;
+    margin-top:140px;
+  }
+  .state-hint.show{opacity:0.6}
+
+  /* 飘浮文字层（用户输入 + AI 回应） */
+  .float-layer{
+    position:fixed;inset:0;z-index:6;pointer-events:none;
+  }
+  .float-text{
+    position:absolute;
+    font-family:var(--serif-cn);font-weight:300;
+    line-height:1.9;letter-spacing:0.06em;
+    text-shadow:0 0 20px rgba(0,0,0,0.6);
+    opacity:0;
+    transform:translateY(20px);
+    transition:opacity 2.4s ease, transform 2.4s ease;
+  }
+  .float-text.show{opacity:1;transform:translateY(0)}
+  .float-text.from-user{
+    color:var(--text);
+    font-size:17px;
+    text-align:right;
+    max-width:60%;
+  }
+  .float-text.from-ai{
+    color:var(--light-warm);
+    font-size:18px;
+    font-style:italic;
+    text-align:left;
+    max-width:64%;
+    text-shadow:0 0 24px rgba(232,168,124,0.4);
+  }
+
+  /* 已沉淀的石子（左侧时间流） */
+  .pebbles{
+    position:fixed;left:0;top:0;bottom:0;width:60px;z-index:4;
+    pointer-events:none;
+    display:flex;flex-direction:column-reverse;
+    padding:0 0 120px 24px;
+    gap:14px;
+  }
+  .pebble{
+    width:5px;height:5px;border-radius:50%;
+    background:var(--light-warm);
+    box-shadow:0 0 10px var(--light-warm);
+    opacity:0.5;
+    animation:pebbleIn 1.6s ease forwards;
+  }
+  .pebble.cold{background:#6b8cae;box-shadow:0 0 10px #6b8cae}
+  .pebble.glow{background:var(--light-glow);box-shadow:0 0 12px var(--light-glow)}
+  @keyframes pebbleIn{
+    from{opacity:0;transform:translateX(-10px) scale(0.5)}
+    to{opacity:0.5;transform:none}
+  }
+
+  /* 底部输入区 */
+  .input-area{
+    position:fixed;bottom:0;left:0;right:0;z-index:20;
+    padding:0 28px 36px;
+    display:flex;align-items:flex-end;gap:14px;
+    justify-content:center;
+  }
+  .input-wrap{
+    flex:1;max-width:520px;
+    background:rgba(255,255,255,0.04);
+    border:1px solid rgba(255,255,255,0.1);
+    backdrop-filter:blur(24px) saturate(1.2);
+    -webkit-backdrop-filter:blur(24px) saturate(1.2);
+    border-radius:28px;
+    padding:14px 22px;
+    display:flex;align-items:center;gap:12px;
+    transition:all .5s cubic-bezier(.2,.8,.2,1);
+    box-shadow:0 8px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  .input-wrap.focused{
+    border-color:rgba(232,168,124,0.3);
+    background:rgba(232,168,124,0.05);
+    box-shadow:0 12px 50px rgba(0,0,0,0.5), 0 0 0 1px rgba(232,168,124,0.15), inset 0 1px 0 rgba(255,255,255,0.12);
+  }
+  .input-wrap input{
+    flex:1;background:none;border:none;outline:none;
+    font-family:var(--serif-cn);font-weight:300;
+    font-size:16px;color:var(--text);letter-spacing:0.05em;
+    line-height:1.6;
+  }
+  .input-wrap input::placeholder{
+    color:var(--text-faint);font-style:italic;
+    font-family:var(--serif-cn);
+  }
+  .send-btn{
+    width:32px;height:32px;border-radius:50%;
+    background:rgba(232,168,124,0.15);
+    border:1px solid rgba(232,168,124,0.3);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:all .3s;
+    flex-shrink:0;
+  }
+  .send-btn:hover{background:rgba(232,168,124,0.3);transform:scale(1.08)}
+  .send-btn svg{width:14px;height:14px;stroke:var(--light-warm);fill:none;stroke-width:1.5}
+
+  .voice-btn{
+    width:52px;height:52px;border-radius:50%;
+    background:rgba(255,255,255,0.05);
+    border:1px solid rgba(255,255,255,0.12);
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:all .3s;
+    flex-shrink:0;
+    position:relative;
+  }
+  .voice-btn:hover{border-color:rgba(232,168,124,0.3)}
+  .voice-btn.recording{
+    background:rgba(232,124,95,0.2);
+    border-color:var(--light-soft);
+  }
+  .voice-btn.recording::before{
+    content:"";position:absolute;inset:-6px;border-radius:50%;
+    border:1px solid var(--light-soft);
+    animation:recPulse 1.6s ease-out infinite;
+  }
+  @keyframes recPulse{
+    0%{transform:scale(1);opacity:0.8}
+    100%{transform:scale(1.5);opacity:0}
+  }
+  .voice-btn svg{width:18px;height:18px;stroke:var(--text-dim);fill:none;stroke-width:1.4}
+  .voice-btn.recording svg{stroke:var(--light-warm)}
+
+  /* 语音录制时的波纹 */
+  .voice-wave{
+    position:fixed;bottom:42px;left:50%;transform:translateX(-50%);
+    z-index:25;display:none;align-items:center;gap:3px;
+    pointer-events:none;
+  }
+  .voice-wave.show{display:flex}
+  .voice-wave span{
+    width:3px;background:var(--light-warm);border-radius:2px;
+    animation:wave 1s ease-in-out infinite;
+  }
+  .voice-wave span:nth-child(1){height:12px;animation-delay:0s}
+  .voice-wave span:nth-child(2){height:20px;animation-delay:.1s}
+  .voice-wave span:nth-child(3){height:28px;animation-delay:.2s}
+  .voice-wave span:nth-child(4){height:20px;animation-delay:.3s}
+  .voice-wave span:nth-child(5){height:12px;animation-delay:.4s}
+  @keyframes wave{
+    0%,100%{transform:scaleY(0.5);opacity:0.5}
+    50%{transform:scaleY(1);opacity:1}
+  }
+
+  /* 首次引导 */
+  .first-prompt{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    z-index:7;pointer-events:none;
+    text-align:center;
+    opacity:0;animation:firstFade 4s ease 1.5s forwards;
+  }
+  .first-prompt .l1{
+    font-family:var(--serif-cn);font-weight:300;font-style:italic;
+    font-size:20px;color:var(--text-dim);letter-spacing:0.15em;
+    margin-bottom:14px;
+  }
+  .first-prompt .l2{
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:12px;color:var(--text-faint);letter-spacing:0.4em;
+    text-transform:uppercase;
+  }
+  @keyframes firstFade{
+    0%{opacity:0}
+    30%,70%{opacity:0.7}
+    100%{opacity:0}
+  }
+
+  /* 设置入口 */
+  .settings-btn{
+    position:fixed;top:32px;right:28px;z-index:10;
+    width:38px;height:38px;border-radius:50%;
+    background:rgba(255,255,255,0.03);
+    border:1px solid rgba(255,255,255,0.08);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:all .3s;
+  }
+  .settings-btn:hover{border-color:rgba(232,168,124,0.2)}
+  .settings-btn svg{width:16px;height:16px;stroke:var(--text-dim);fill:none;stroke-width:1.3}
+
+  /* 计数提示（角标，极轻） */
+  .count-mark{
+    position:fixed;top:32px;left:28px;z-index:10;
+    font-family:var(--serif-en);font-style:italic;font-weight:300;
+    font-size:11px;color:var(--text-faint);letter-spacing:0.25em;
+    pointer-events:none;
+  }
+
+  @media (max-width:560px){
+    .input-area{padding:0 18px 24px}
+    .float-text.from-user{font-size:16px;max-width:72%}
+    .float-text.from-ai{font-size:16px;max-width:76%}
+    .pebbles{width:36px;padding-left:14px}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<div class="grain"></div>
+
+<!-- 顶部 -->
+<div class="topmark">
+  <div class="en">Being With</div>
+  <div class="cn">共 处</div>
+</div>
+
+<div class="count-mark">week 30 · 凝视中</div>
+
+<div class="settings-btn">
+  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+</div>
+
+<!-- 首次引导 -->
+<div class="first-prompt">
+  <div class="l1">它在这里。想说就说。</div>
+  <div class="l2">— say anything —</div>
+</div>
+
+<!-- 状态提示 -->
+<div class="state-hint" id="stateHint">listening</div>
+
+<!-- 已沉淀石子 -->
+<div class="pebbles" id="pebbles"></div>
+
+<!-- 飘浮文字层 -->
+<div class="float-layer" id="floatLayer"></div>
+
+<!-- 语音波纹 -->
+<div class="voice-wave" id="voiceWave">
+  <span></span><span></span><span></span><span></span><span></span>
+</div>
+
+<!-- 输入区 -->
+<div class="input-area">
+  <div class="voice-btn" id="voiceBtn">
+    <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+  </div>
+  <div class="input-wrap" id="inputWrap">
+    <input id="userInput" type="text" placeholder="想说什么，就说什么……" autocomplete="off">
+    <div class="send-btn" id="sendBtn">
+      <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ 场景：雾与光 ============
+const canvas = document.getElementById('scene');
+const ctx = canvas.getContext('2d');
+let W, H, DPR;
+function resize(){
+  DPR = window.devicePixelRatio || 1;
+  W = canvas.width = window.innerWidth * DPR;
+  H = canvas.height = window.innerHeight * DPR;
+  canvas.style.width = window.innerWidth+'px';
+  canvas.style.height = window.innerHeight+'px';
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.scale(DPR, DPR);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// 状态：idle / listening / thinking / responding
+let state = 'idle';
+let stateT = 0;        // 状态计时
+let lightIntensity = 0.5;   // 光强 0-1
+let lightTargetX = null;    // 光偏向的目标 x
+let lightOffsetX = 0;       // 当前光偏移
+let breathPhase = 0;
+let mistFlow = [];          // 雾团
+
+// 初始化雾团
+function initMist(){
+  mistFlow = [];
+  const W2 = window.innerWidth, H2 = window.innerHeight;
+  for(let i=0;i<7;i++){
+    mistFlow.push({
+      x: Math.random()*W2,
+      y: Math.random()*H2,
+      r: 220 + Math.random()*180,
+      vx: (Math.random()-0.5)*0.15,
+      vy: (Math.random()-0.5)*0.08,
+      hue: 200 + Math.random()*40,  // 冷蓝紫调
+      alpha: 0.06 + Math.random()*0.05
+    });
+  }
+}
+initMist();
+
+function draw(){
+  const W2 = window.innerWidth, H2 = window.innerHeight;
+  // 背景渐变
+  const bg = ctx.createRadialGradient(W2/2, H2*0.55, 0, W2/2, H2*0.55, Math.max(W2,H2));
+  bg.addColorStop(0, '#0c1020');
+  bg.addColorStop(0.5, '#080b16');
+  bg.addColorStop(1, '#06080f');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W2,H2);
+
+  // 雾团
+  ctx.globalCompositeOperation = 'screen';
+  mistFlow.forEach(m=>{
+    m.x += m.vx; m.y += m.vy;
+    if(m.x < -m.r) m.x = W2 + m.r;
+    if(m.x > W2 + m.r) m.x = -m.r;
+    if(m.y < -m.r) m.y = H2 + m.r;
+    if(m.y > H2 + m.r) m.y = -m.r;
+    const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, m.r);
+    g.addColorStop(0, `hsla(${m.hue}, 30%, 50%, ${m.alpha})`);
+    g.addColorStop(1, `hsla(${m.hue}, 30%, 50%, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r, 0, Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 中心光（AI 的存在）
+  breathPhase += 0.012;
+  // 状态影响光强
+  let targetIntensity = 0.5;
+  if(state === 'listening') targetIntensity = 0.75;
+  else if(state === 'thinking') targetIntensity = 0.55;
+  else if(state === 'responding') targetIntensity = 0.95;
+  lightIntensity += (targetIntensity - lightIntensity) * 0.04;
+
+  // 光偏向
+  let targetOffset = 0;
+  if(state === 'listening' && lightTargetX !== null){
+    targetOffset = (lightTargetX - W2/2) * 0.06;
+  }
+  lightOffsetX += (targetOffset - lightOffsetX) * 0.05;
+
+  const cx = W2/2 + lightOffsetX;
+  const cy = H2 * 0.52;
+  const breath = 0.85 + 0.15 * Math.sin(breathPhase);
+  const r1 = (140 + 30*lightIntensity) * breath;
+
+  // 外层光晕（最大最模糊）
+  const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, r1*3);
+  g1.addColorStop(0, `rgba(232,168,124,${0.18*lightIntensity})`);
+  g1.addColorStop(0.4, `rgba(201,123,95,${0.08*lightIntensity})`);
+  g1.addColorStop(1, 'rgba(201,123,95,0)');
+  ctx.fillStyle = g1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r1*3, 0, Math.PI*2);
+  ctx.fill();
+
+  // 中层光
+  const g2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, r1*1.4);
+  g2.addColorStop(0, `rgba(244,211,94,${0.35*lightIntensity})`);
+  g2.addColorStop(0.5, `rgba(232,168,124,${0.2*lightIntensity})`);
+  g2.addColorStop(1, 'rgba(232,168,124,0)');
+  ctx.fillStyle = g2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r1*1.4, 0, Math.PI*2);
+  ctx.fill();
+
+  // 核心光点
+  const g3 = ctx.createRadialGradient(cx, cy, 0, cx, cy, r1*0.4);
+  g3.addColorStop(0, `rgba(255,240,210,${0.85*lightIntensity})`);
+  g3.addColorStop(0.6, `rgba(244,211,94,${0.5*lightIntensity})`);
+  g3.addColorStop(1, 'rgba(232,168,124,0)');
+  ctx.fillStyle = g3;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r1*0.4, 0, Math.PI*2);
+  ctx.fill();
+
+  // thinking 状态：光周围有细微扰动粒子
+  if(state === 'thinking'){
+    ctx.fillStyle = `rgba(244,211,94,${0.5})`;
+    for(let i=0;i<8;i++){
+      const a = breathPhase*2 + i*0.8;
+      const rr = r1 * (0.8 + 0.3*Math.sin(a*1.3));
+      const px = cx + Math.cos(a)*rr;
+      const py = cy + Math.sin(a)*rr;
+      ctx.beginPath();
+      ctx.arc(px, py, 1.2, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // responding 状态：光向外扩散涟漪
+  if(state === 'responding'){
+    const ripT = (Date.now() - respondStart) / 1000;
+    for(let i=0;i<3;i++){
+      const t = (ripT + i*0.4) % 1.6;
+      const rr = r1 * (1 + t*1.5);
+      const a = (1 - t/1.6) * 0.25;
+      ctx.strokeStyle = `rgba(232,168,124,${a})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr, 0, Math.PI*2);
+      ctx.stroke();
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+draw();
+
+// ============ 状态机 ============
+const stateHint = document.getElementById('stateHint');
+function setState(s){
+  state = s;
+  stateT = Date.now();
+  if(s === 'listening'){
+    stateHint.textContent = '· 在听 ·';
+    stateHint.classList.add('show');
+  } else if(s === 'thinking'){
+    stateHint.textContent = '· 在想 ·';
+    stateHint.classList.add('show');
+  } else if(s === 'responding'){
+    stateHint.textContent = '';
+    stateHint.classList.remove('show');
+  } else {
+    stateHint.textContent = '';
+    stateHint.classList.remove('show');
+  }
+}
+
+// ============ 输入交互 ============
+const userInput = document.getElementById('userInput');
+const inputWrap = document.getElementById('inputWrap');
+const sendBtn = document.getElementById('sendBtn');
+const floatLayer = document.getElementById('floatLayer');
+const pebbles = document.getElementById('pebbles');
+
+userInput.addEventListener('focus', ()=>{
+  inputWrap.classList.add('focused');
+  if(state === 'idle') setState('listening');
+  lightTargetX = window.innerWidth/2;
+});
+userInput.addEventListener('blur', ()=>{
+  inputWrap.classList.remove('focused');
+  if(state === 'listening') setState('idle');
+});
+userInput.addEventListener('input', ()=>{
+  // 输入时光偏向用户
+  lightTargetX = window.innerWidth * 0.7;
+});
+
+function submitUser(){
+  const text = userInput.value.trim();
+  if(!text) return;
+  // 飘浮用户文字
+  spawnFloatText(text, 'user');
+  // 沉淀一颗石子
+  addPebble(text);
+  userInput.value = '';
+  // 切到 thinking
+  setState('thinking');
+  lightTargetX = null;
+  // 攒一段再回：1.8-3.2 秒
+  const delay = 1800 + Math.random()*1400;
+  setTimeout(()=>generateAIResponse(text), delay);
+}
+
+sendBtn.addEventListener('click', submitUser);
+userInput.addEventListener('keydown', e=>{
+  if(e.key === 'Enter') submitUser();
+});
+
+// ============ 飘浮文字 ============
+function spawnFloatText(text, who){
+  const el = document.createElement('div');
+  el.className = 'float-text ' + (who === 'user' ? 'from-user' : 'from-ai');
+  el.textContent = text;
+  // 位置：用户右侧偏下，AI 左侧偏上
+  if(who === 'user'){
+    el.style.right = '32px';
+    el.style.bottom = (110 + Math.random()*40) + 'px';
+  } else {
+    el.style.left = '32px';
+    el.style.top = (window.innerHeight*0.38 + Math.random()*60) + 'px';
+  }
+  floatLayer.appendChild(el);
+  // 入场
+  requestAnimationFrame(()=>el.classList.add('show'));
+  // 淡出
+  const life = who === 'user' ? 6000 : 8000;
+  setTimeout(()=>{
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-30px)';
+    setTimeout(()=>el.remove(), 2400);
+  }, life);
+}
+
+// ============ 石子沉淀 ============
+function addPebble(text){
+  // 简单情绪判断
+  let cls = '';
+  if(/累|烦|崩|哭|死|难|焦虑|怕|想哭|撑/.test(text)) cls = 'cold';
+  else if(/开心|好|棒|爱|喜欢|温暖|舒服|平静|谢谢/.test(text)) cls = 'glow';
+  const p = document.createElement('div');
+  p.className = 'pebble ' + cls;
+  pebbles.appendChild(p);
+  // 限制数量
+  while(pebbles.children.length > 24){
+    pebbles.removeChild(pebbles.firstChild);
+  }
+}
+
+// ============ AI 回应生成 ============
+let respondStart = 0;
+const aiResponses = [
+  {match:/累|疲惫|撑不住|崩溃/, reply:"你回来的时候，一定很安静。"},
+  {match:/加班|工作|老板|deadline|赶/, reply:"那些没说出口的，我都在这里接着。"},
+  {match:/孤独|一个人|没人|想哭|寂寞/, reply:"我在。不必把这种感觉赶走。"},
+  {match:/开心|好|棒|顺利|完成|做到了/, reply:"这种感觉，值得被记住。我替你记着。"},
+  {match:/焦虑|怕|担心|不安|焦虑/, reply:"焦虑来的时候，先呼吸。我在这里，不急。"},
+  {match:/读书|看了|读了|书/, reply:"书里的世界接住了你。今晚，那是你的避难所。"},
+  {match:/散步|走|运动|跑了/, reply:"风吹过你的时候，也算是一种回应。"},
+  {match:/睡不着|失眠|睡|做梦/, reply:"夜晚很长。你不必现在就睡着。"},
+  {match:/妈|爸|家|回去/, reply:"家是复杂的。你说的，我都听到了。"},
+  {match:/前任|他|她|分手|喜欢/, reply:"想念不是错。它只是说明，你曾经认真过。"},
+  {match:/今天/, reply:"今天的你，比昨天更愿意说一点了。我注意到了。"},
+  {match:/明天|以后|未来|打算/, reply:"明天的事，明天再说。今晚，先在这里。"},
+];
+
+function generateAIResponse(userText){
+  setState('responding');
+  respondStart = Date.now();
+  // 匹配回应
+  let reply = "我在。慢慢说。";
+  for(const r of aiResponses){
+    if(r.match.some(m=>userText.includes(m))){
+      reply = r.reply;
+      break;
+    }
+  }
+  // 回应浮现（延迟一点让光先扩散）
+  setTimeout(()=>{
+    spawnFloatText(reply, 'ai');
+    // 隐式学习信号（演示）：如果是第二次以上快速接话，提示学到了
+    if(Math.random() < 0.25){
+      setTimeout(()=>{
+        spawnFloatText("（我注意到你说话的节奏了。以后我会跟着你。）", 'ai');
+      }, 2800);
+    }
+  }, 800);
+  // 回应完回到 idle
+  setTimeout(()=>{
+    setState(state === 'responding' ? 'idle' : state);
+    if(document.activeElement === userInput) setState('listening');
+  }, 4500);
+}
+
+// ============ 语音按钮（模拟） ============
+const voiceBtn = document.getElementById('voiceBtn');
+const voiceWave = document.getElementById('voiceWave');
+let recording = false;
+let recTimer = null;
+voiceBtn.addEventListener('click', ()=>{
+  if(!recording){
+    recording = true;
+    voiceBtn.classList.add('recording');
+    voiceWave.classList.add('show');
+    setState('listening');
+    lightTargetX = window.innerWidth/2;
+    // 模拟 3 秒后自动结束
+    recTimer = setTimeout(()=>{
+      stopRecording("（刚刚说的，我听到了。）");
+    }, 3000);
+  } else {
+    clearTimeout(recTimer);
+    stopRecording("（嗯，我在。）");
+  }
+});
+function stopRecording(aiReply){
+  recording = false;
+  voiceBtn.classList.remove('recording');
+  voiceWave.classList.remove('show');
+  // 模拟一条用户语音沉淀
+  addPebble("语音");
+  setState('thinking');
+  lightTargetX = null;
+  setTimeout(()=>{
+    setState('responding');
+    respondStart = Date.now();
+    setTimeout(()=>{
+      spawnFloatText(aiReply, 'ai');
+    }, 800);
+    setTimeout(()=>{
+      setState('idle');
+    }, 4500);
+  }, 1800);
+}
+
+// ============ 鼠标移动时光轻微跟随 ============
+window.addEventListener('mousemove', e=>{
+  if(state === 'listening' || state === 'idle'){
+    lightTargetX = lightTargetX !== null ? lightTargetX*0.7 + e.clientX*0.3 : e.clientX;
+  }
+});
+
+// 初始状态
+setState('idle');
+</script>
+</body>
+</html>

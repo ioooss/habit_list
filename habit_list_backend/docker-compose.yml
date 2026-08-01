@@ -1,0 +1,40 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: habit_list_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/habit_list.db
+    ports:
+      - "127.0.0.1:8780:8780"
+    volumes:
+      - ./data:/data
+      - ./logs:/app/logs
+      # 本地开发时代码热更用：
+      # - ./app:/app/app:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8780/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: habit_list_nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/certs:/etc/letsencrypt:ro
+      - ./logs/nginx:/var/log/nginx
+    environment:
+      - DOMAIN=${DEPLOY_DOMAIN:-localhost}

@@ -1,0 +1,23 @@
+# 凭据与本地
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+data/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+coverage.xml
+coverage*
+.DS_Store
+tmp/
+temp/
+# 部署相关
+deploy/secrets/
