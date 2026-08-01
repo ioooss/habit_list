@@ -13,15 +13,19 @@ services:
   nginx:
     environment:
       STAGING_API_AUTH_TOKEN: ${API_AUTH_TOKEN:?API_AUTH_TOKEN is required}
-      NGINX_ENVSUBST_FILTER: ^(DOMAIN|STAGING_API_AUTH_TOKEN)$
     volumes:
       - ${STAGING_NGINX_TEMPLATE:-./deploy/nginx.staging.conf}:/etc/nginx/templates/default.conf.template:ro
       - ./web/app.html:/usr/share/nginx/html/index.html:ro
       - ./deploy/staging.htpasswd:/etc/nginx/auth/staging.htpasswd:ro
-    command:
+    entrypoint:
       - /bin/sh
       - -c
+    command:
       - |
+        envsubst '$${DOMAIN} $${STAGING_API_AUTH_TOKEN}' \
+          < /etc/nginx/templates/default.conf.template \
+          > /etc/nginx/conf.d/default.conf
+        nginx -t
         while sleep 21600; do nginx -s reload; done &
         exec nginx -g 'daemon off;'
 

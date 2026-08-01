@@ -211,15 +211,17 @@ ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
 
 printf '[6/8] Verify the public HTTP-01 challenge path...\n'
 challenge_name="codex-$RANDOM-$RANDOM"
+challenge_dir="/var/www/certbot/.well-known/acme-challenge"
+challenge_path="$challenge_dir/$challenge_name"
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-  "set -eu; printf '%s' '$challenge_name' | sudo tee '/var/www/certbot/$challenge_name' >/dev/null"
+  "set -eu; sudo install -d -m 0755 '$challenge_dir'; printf '%s' '$challenge_name' | sudo tee '$challenge_path' >/dev/null; sudo chmod 0644 '$challenge_path'"
 if ! challenge_body="$(curl -fsS --max-time 15 "http://$SERVER/.well-known/acme-challenge/$challenge_name")"; then
   ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-    "set -eu; sudo rm -f -- '/var/www/certbot/$challenge_name'"
+    "set -eu; sudo rm -f -- '$challenge_path'"
   fail "port 80 or the Tencent firewall does not expose the ACME challenge path"
 fi
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-  "set -eu; sudo rm -f -- '/var/www/certbot/$challenge_name'"
+  "set -eu; sudo rm -f -- '$challenge_path'"
 [[ "$challenge_body" == "$challenge_name" ]] || fail "unexpected ACME challenge response"
 
 cert_exists="$(ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
