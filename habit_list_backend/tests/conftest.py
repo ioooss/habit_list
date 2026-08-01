@@ -14,8 +14,13 @@ os.environ["APP_ENV"] = "dev"
 # 用临时文件 db，放在 data 目录下；每个 test 开始前清掉重来
 TEST_DB_PATH = str((REPO_DIR / "data" / "pytest_integration.db").resolve()).replace("\\", "/")
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
+os.environ["AUTH_MODE"] = "sessions"
 os.environ["API_AUTH_TOKEN"] = "test-token"
 os.environ["ADMIN_TOKEN"] = "test-admin-token"
+os.environ["AUTH_TOKEN_PEPPER"] = "test-token-pepper-0000000000000000000000000001"
+os.environ["PII_ENCRYPTION_KEY"] = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+os.environ["ADMIN_MFA_ENCRYPTION_KEY"] = "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE="
+os.environ["APPLE_CLIENT_IDS"] = "com.example.innerterrain.tests"
 os.environ["DASHSCOPE_API_KEY"] = "sk-test-xxxxxxxxxxxxxxxxxxxx"
 os.environ["DEFAULT_USER_ID"] = "01920000-0000-0000-0000-000000000001"
 os.environ["SQLITE_VSS_EXT_PATH"] = ""
@@ -91,26 +96,36 @@ async def app_no_scheduler(monkeypatch, test_settings: Settings) -> FastAPI:
     get_settings.cache_clear()
 
     from app.main import create_app
+
     app = create_app()
 
     # 关键：显式立刻跑 init_db（create_all + migrations.apply + 默认用户）
     # lifespan 里也会跑一次，但那要等 ASGI 客户端连上才会触发；
     # 测试里直接用 get_sessionmaker() 绕过 FastAPI 的场景必须在这里就建好表
     from app.db.database import init_db
+
     await init_db(test_settings)
 
     return app
 
 
 @pytest.fixture()
-async def client(
-    app_no_scheduler: FastAPI, test_settings: Settings
-) -> AsyncIterator[AsyncClient]:
+async def client(app_no_scheduler: FastAPI, test_settings: Settings) -> AsyncIterator[AsyncClient]:
+    from app.identity.service import issue_session_for_user
+
+    tokens = await issue_session_for_user(
+        user_id=test_settings.default_user_id,
+        installation_id="pytest-installation-identity-0001",
+        platform="ios",
+        device_name="pytest iPhone",
+        app_version="0.0-test",
+        settings=test_settings,
+    )
     transport = ASGITransport(app=app_no_scheduler)
     async with AsyncClient(
         transport=transport,
         base_url="http://testserver",
-        headers={"Authorization": f"Bearer {test_settings.api_auth_token}"},
+        headers={"Authorization": f"Bearer {tokens.access_token}"},
         timeout=30,
     ) as c:
         yield c

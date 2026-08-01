@@ -1,9 +1,12 @@
 name: inner-terrain
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 x-backend-common: &backend-common
-  build:
-    context: .
-    dockerfile: Dockerfile
   image: inner-terrain-backend:local
   env_file:
     - ${APP_ENV_FILE:-.env.production}
@@ -15,6 +18,8 @@ x-backend-common: &backend-common
     - no-new-privileges:true
   cap_drop:
     - ALL
+  pids_limit: 256
+  logging: *default-logging
   networks:
     - backend
 
@@ -26,6 +31,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
+    shm_size: 256m
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -34,6 +42,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    logging: *default-logging
     networks:
       - backend
 
@@ -41,6 +50,7 @@ services:
     <<: *backend-common
     restart: "no"
     command: ["python", "-m", "alembic", "upgrade", "head"]
+    mem_limit: 768m
     environment:
       PROCESS_ROLE: api
     depends_on:
@@ -49,6 +59,9 @@ services:
 
   app:
     <<: *backend-common
+    build:
+      context: .
+      dockerfile: Dockerfile
     command:
       [
         "uvicorn",
@@ -63,13 +76,14 @@ services:
         "--timeout-keep-alive",
         "60",
       ]
+    mem_limit: 896m
     environment:
       PROCESS_ROLE: api
     depends_on:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:8780:8780"
+      - "127.0.0.1:${APP_HOST_PORT:-8780}:8780"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8780/ready"]
       interval: 20s
@@ -80,6 +94,7 @@ services:
   worker:
     <<: *backend-common
     command: ["python", "-m", "app.worker"]
+    mem_limit: 768m
     environment:
       PROCESS_ROLE: worker
       WORKER_HEARTBEAT_PATH: /tmp/habit-list-worker-heartbeat.json
@@ -99,6 +114,10 @@ services:
       DOMAIN: ${DEPLOY_DOMAIN:?DEPLOY_DOMAIN is required}
       NGINX_ENVSUBST_FILTER: ^DOMAIN$
     restart: unless-stopped
+    mem_limit: 128m
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       app:
         condition: service_healthy
@@ -109,7 +128,7 @@ services:
       - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/www/certbot:/var/www/certbot:ro
-      - ./logs/nginx:/var/log/nginx
+    logging: *default-logging
     networks:
       - edge
       - backend

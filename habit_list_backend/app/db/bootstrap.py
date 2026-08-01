@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from ..core.config import Settings
 from .models import Procedural, User, _utcnow_iso, uuid7
 
-_PROCEDURAL_DEFAULTS: tuple[tuple[str, dict[str, Any], float, str], ...] = (
+PROCEDURAL_DEFAULTS: tuple[tuple[str, dict[str, Any], float, str], ...] = (
     ("reply_speed", {"label": "中等速度", "level": 2, "hint": "快-1/中-2/慢-3"}, 0.5, "默认值"),
     ("reply_length", {"label": "一段", "level": 1, "hint": "一句-1/一段-2/长段落-3"}, 0.5, "默认值"),
     ("silence_tolerance_days", {"label": "3 天不说话视为低谷", "days": 3}, 0.5, "默认值"),
@@ -49,7 +49,7 @@ async def seed_transitional_defaults(conn: AsyncConnection, settings: Settings) 
             ["user_id"],
         )
     )
-    for key, value, confidence, reason in _PROCEDURAL_DEFAULTS:
+    for key, value, confidence, reason in PROCEDURAL_DEFAULTS:
         await conn.execute(
             _insert_do_nothing(
                 conn,
@@ -71,4 +71,57 @@ async def seed_transitional_defaults(conn: AsyncConnection, settings: Settings) 
         )
 
 
-__all__ = ["seed_transitional_defaults"]
+async def seed_admin_rbac_defaults(conn: AsyncConnection) -> None:
+    """Seed code-owned roles and permissions without creating an administrator."""
+
+    from ..admin.models import AdminPermission, AdminRole, AdminRolePermission
+    from ..admin.rbac import PERMISSIONS, ROLE_DEFINITIONS
+
+    now = _utcnow_iso()
+    for permission_code, description in PERMISSIONS.items():
+        await conn.execute(
+            _insert_do_nothing(
+                conn,
+                AdminPermission.__table__,
+                {
+                    "permission_code": permission_code,
+                    "description": description,
+                    "created_at": now,
+                },
+                ["permission_code"],
+            )
+        )
+    for role_code, (display_name, description, permissions) in ROLE_DEFINITIONS.items():
+        await conn.execute(
+            _insert_do_nothing(
+                conn,
+                AdminRole.__table__,
+                {
+                    "role_code": role_code,
+                    "display_name": display_name,
+                    "description": description,
+                    "is_system": True,
+                    "created_at": now,
+                },
+                ["role_code"],
+            )
+        )
+        for permission_code in permissions:
+            await conn.execute(
+                _insert_do_nothing(
+                    conn,
+                    AdminRolePermission.__table__,
+                    {
+                        "role_code": role_code,
+                        "permission_code": permission_code,
+                    },
+                    ["role_code", "permission_code"],
+                )
+            )
+
+
+__all__ = [
+    "PROCEDURAL_DEFAULTS",
+    "seed_admin_rbac_defaults",
+    "seed_transitional_defaults",
+]

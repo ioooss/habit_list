@@ -1,11 +1,14 @@
 """全局配置（pydantic-settings 读 .env）。"""
+
 from __future__ import annotations
 
 import os
 import re
+from base64 import urlsafe_b64decode
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,8 +33,25 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "*"
 
     # ---- 鉴权 ----
+    auth_mode: str = Field(default="legacy", pattern=r"^(legacy|sessions)$")
+    # 仅为本地旧原型保留；session 模式不会读取这两个固定 token。
     api_auth_token: str = Field(default="dev-only-change-me")
     admin_token: str = Field(default="dev-only-admin")
+    auth_token_pepper: str = ""
+    pii_encryption_key: str = ""
+    auth_access_ttl_seconds: int = Field(default=900, ge=300, le=3600)
+    auth_refresh_ttl_days: int = Field(default=30, ge=1, le=90)
+    auth_challenge_ttl_seconds: int = Field(default=600, ge=120, le=900)
+    auth_max_sessions_per_user: int = Field(default=10, ge=1, le=50)
+    apple_client_ids: str = ""
+    apple_jwks_cache_seconds: int = Field(default=3600, ge=300, le=86400)
+
+    # ---- 管理员身份（与用户身份完全分离）----
+    admin_mfa_encryption_key: str = ""
+    admin_access_ttl_seconds: int = Field(default=900, ge=300, le=1800)
+    admin_max_failed_attempts: int = Field(default=5, ge=3, le=10)
+    admin_lockout_seconds: int = Field(default=900, ge=60, le=86400)
+    admin_totp_issuer: str = "Inner Terrain Admin"
 
     # ---- 数据库 ----
     database_url: str = "sqlite+aiosqlite:///./data/habit_list.db"
@@ -149,14 +169,32 @@ class Settings(BaseSettings):
                 raise ValueError("生产环境必须显式拆分 PROCESS_ROLE=api 或 worker")
             if not self.cors_origins or "*" in self.cors_origins:
                 raise ValueError("生产环境必须显式配置 CORS_ALLOWED_ORIGINS")
-            weak_markers = ("dev-only", "replace_with", "change-me")
-            tokens = (self.api_auth_token, self.admin_token)
-            if any(len(token) < 32 or any(marker in token.lower() for marker in weak_markers) for token in tokens):
-                raise ValueError("生产环境 API_AUTH_TOKEN 和 ADMIN_TOKEN 必须是不同的高强度随机值")
-            if self.api_auth_token == self.admin_token:
-                raise ValueError("生产环境 API_AUTH_TOKEN 和 ADMIN_TOKEN 不能相同")
+            if any(not self._is_secure_origin(origin) for origin in self.cors_origins):
+                raise ValueError("生产环境 CORS_ALLOWED_ORIGINS 必须是无路径的 HTTPS Origin")
+            if self.auth_mode != "sessions":
+                raise ValueError("生产环境必须使用 AUTH_MODE=sessions")
+            weak_markers = ("dev-only", "replace_with", "change-me", "placeholder")
+            if len(self.auth_token_pepper) < 32 or any(
+                marker in self.auth_token_pepper.lower() for marker in weak_markers
+            ):
+                raise ValueError("生产环境必须配置高强度 AUTH_TOKEN_PEPPER")
+            self._validate_fernet_key(self.pii_encryption_key, "PII_ENCRYPTION_KEY")
+            self._validate_fernet_key(
+                self.admin_mfa_encryption_key,
+                "ADMIN_MFA_ENCRYPTION_KEY",
+            )
+            if self.pii_encryption_key == self.admin_mfa_encryption_key:
+                raise ValueError("PII_ENCRYPTION_KEY 与 ADMIN_MFA_ENCRYPTION_KEY 必须不同")
+            if not self.apple_client_id_list or any(
+                marker in client_id.lower()
+                for client_id in self.apple_client_id_list
+                for marker in weak_markers
+            ):
+                raise ValueError("生产环境必须配置真实 APPLE_CLIENT_IDS")
             if not self.dashscope_api_key or "replace_with" in self.dashscope_api_key.lower():
                 raise ValueError("生产环境必须配置真实 DASHSCOPE_API_KEY")
+            if not self._is_deploy_domain(self.deploy_domain):
+                raise ValueError("生产环境 DEPLOY_DOMAIN 必须是合法的真实 DNS 域名")
         if (
             self.database_url.startswith("postgresql")
             and self.memory_v2_embedding_enabled
@@ -181,6 +219,49 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         """Comma-separated browser origins; native mobile clients do not need CORS."""
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def apple_client_id_list(self) -> list[str]:
+        return [
+            client_id.strip() for client_id in self.apple_client_ids.split(",") if client_id.strip()
+        ]
+
+    @staticmethod
+    def _validate_fernet_key(value: str, name: str) -> None:
+        try:
+            decoded = urlsafe_b64decode(value.encode("ascii"))
+        except Exception as exc:  # noqa: BLE001 - normalize config error
+            raise ValueError(f"{name} 必须是 urlsafe-base64 Fernet key") from exc
+        if len(decoded) != 32:
+            raise ValueError(f"{name} 必须解码为 32 字节")
+
+    @staticmethod
+    def _is_secure_origin(value: str) -> bool:
+        parsed = urlsplit(value)
+        return bool(
+            parsed.scheme == "https"
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+        )
+
+    @staticmethod
+    def _is_deploy_domain(value: str) -> bool:
+        normalized = value.strip().casefold()
+        if normalized == "localhost" or any(
+            marker in normalized for marker in ("example", "replace_with", "placeholder")
+        ):
+            return False
+        return bool(
+            len(normalized) <= 253
+            and re.fullmatch(
+                r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
+                normalized,
+            )
+        )
 
     @property
     def _sqlite_local_path(self) -> Optional[str]:

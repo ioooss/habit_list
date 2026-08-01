@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.secrets/
 
 # 系统与编辑器
 .DS_Store
@@ -25,6 +26,7 @@ habit_list_backend/data/pip-cache/
 habit_list_backend/data/pip-tmp/
 
 # 调试截图 / 临时文件
+.tmp/
 tmp/
 temp/
 *.log

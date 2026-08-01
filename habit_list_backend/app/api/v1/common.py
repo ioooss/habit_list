@@ -22,6 +22,13 @@ def current_user(request: Request) -> str:
     return str(uid)
 
 
+def current_session(request: Request) -> str:
+    session_id = getattr(request.state, "session_id", None)
+    if not session_id:
+        raise ApiError("UNAUTHORIZED", "当前请求没有有效 session", status.HTTP_401_UNAUTHORIZED)
+    return str(session_id)
+
+
 def request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", ""))
 

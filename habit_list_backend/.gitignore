@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.production.example
+!.env.integration.example
 *.sqlite
 *.sqlite3
 data/

@@ -25,9 +25,9 @@ Invoke-WebRequest http://127.0.0.1:8780/health
 
 ## 接口速查（都挂 `/api/v1`）
 
-所有请求要求 Header：
+除登录/刷新接口外，用户请求要求 Header：
 ```
-Authorization: Bearer <API_AUTH_TOKEN>
+Authorization: Bearer <USER_ACCESS_TOKEN>
 Content-Type: application/json
 ```
 
@@ -35,6 +35,11 @@ Content-Type: application/json
 |---|---|---|
 | GET  | `/health` | 存活检查（免鉴权，不访问数据库） |
 | GET  | `/ready` | 就绪检查（免鉴权，验证数据库连接） |
+| POST | `/api/v1/auth/challenges` | 创建一次性 Apple 登录挑战（免鉴权） |
+| POST | `/api/v1/auth/apple` | Sign in with Apple token 交换（免鉴权） |
+| POST | `/api/v1/auth/refresh` | 轮换刷新令牌（免鉴权） |
+| GET | `/api/v1/auth/sessions` | 当前用户设备会话列表 |
+| POST | `/api/v1/auth/logout-all` | 撤销当前用户全部会话 |
 | POST | `/chat/completions` | **共处页聊天**，SSE 流式输出，System1 三重检索 |
 | GET  | `/memories` | Memory V2 列表、搜索、状态筛选与游标分页 |
 | GET  | `/memories/{claim_id}/evidence` | 查看该记忆对应的用户原话证据 |
@@ -67,7 +72,7 @@ Content-Type: application/json
 ..\.conda\python.exe -m pytest
 ```
 
-Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.md`](docs/memory-v2.md)。默认 `MEMORY_V2_MODE=shadow_write`，只双写和抽取，不改变当前 AI 回复。生产拓扑、迁移、部署、备份底线和上线门槛见 [`docs/production-foundation.md`](docs/production-foundation.md)。
+Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.md`](docs/memory-v2.md)。默认 `MEMORY_V2_MODE=shadow_write`，只双写和抽取，不改变当前 AI 回复。用户身份、设备会话、刷新令牌与管理员 MFA/RBAC 见 [`docs/identity-and-admin.md`](docs/identity-and-admin.md)。生产拓扑、迁移、部署、备份底线和上线门槛见 [`docs/production-foundation.md`](docs/production-foundation.md)。
 
 ## 生产部署基线
 
@@ -84,7 +89,7 @@ Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.m
    bash deploy/deploy.sh
    ```
 
-脚本不删除远端文件，会保留上一版生产配置，但不会自动签发 TLS 证书。完整步骤和公开上线前门槛见生产运行手册。当前固定 Bearer token 只是过渡边界，不能作为正式多用户/管理员鉴权方案。
+脚本只发布已提交的 Git 版本，以独立 release 目录保留上一版，但不会自动签发 TLS 证书。完整步骤和公开上线前门槛见生产运行手册。生产配置强制使用 Sign in with Apple、可撤销用户会话以及独立的管理员密码 + TOTP + RBAC；固定 Bearer token 只允许本地旧原型使用。
 
 ## 项目结构
 
@@ -93,11 +98,14 @@ Memory V2 的算法、开关、灰度顺序和删除语义见 [`docs/memory-v2.m
 app/
 ├─ main.py
 ├─ core/       (config / security 鉴权中间件)
+├─ identity/   (Apple OIDC / 设备 / Session / Refresh Rotation)
+├─ admin/      (独立管理员身份 / TOTP / RBAC / 审计)
 ├─ db/         (database 引擎 + 迁移边界 + legacy / Memory V2 models)
 ├─ providers/  (dashscope LLM/Embedding/ASR/TTS)
 ├─ retrieval/  (bm25 + sqlite-vss + NetworkX 2hop + RRF)
 ├─ memory/     (system1 / system2 / consolidate / forgetting / conflict / memo_utils)
 ├─ memory_v2/  (extractor / reconcile / service / retrieval / worker)
 ├─ worker/     (独立后台进程 + 心跳健康检查)
-└─ api/v1/     (chat / memories / memos / pebbles / insights / me / speech)
+├─ api/v1/     (auth / chat / memories / memos / pebbles / insights / me / speech)
+└─ api/admin/  (独立管理员 API)
 ```

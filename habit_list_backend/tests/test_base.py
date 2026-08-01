@@ -33,12 +33,11 @@ async def test_auth_required(client: AsyncClient):
     assert r.status_code == 401
 
 
-async def test_auth_admin_equals_valid(client: AsyncClient, test_settings):
-    # ADMIN_TOKEN 同样应通过
+async def test_legacy_admin_token_cannot_impersonate_user(client: AsyncClient, test_settings):
     req = client.build_request("GET", "/api/v1/memos?filter=all")
     req.headers["Authorization"] = f"Bearer {test_settings.admin_token}"
     r = await client.send(req)
-    assert r.status_code == 200
+    assert r.status_code == 401
 
 
 async def test_profile_default(client: AsyncClient, test_settings):

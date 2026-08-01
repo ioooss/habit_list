@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from .api.admin.v1.router import router as admin_router
 from .api.v1.router import router as api_router
 from .core.config import Settings, get_settings
 from .core.logging import setup_logging
@@ -54,8 +55,9 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="四层认知记忆 OS（Working/Episodic/Semantic/Procedural）+ DashScope 代理",
         lifespan=lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.is_dev else None,
+        redoc_url="/redoc" if settings.is_dev else None,
+        openapi_url="/openapi.json" if settings.is_dev else None,
     )
     app.state.settings = settings
 
@@ -95,4 +97,5 @@ def create_app() -> FastAPI:
         return {"ok": True, "service": "habit_list", "ready": True}
 
     app.include_router(api_router, prefix=settings.api_prefix)
+    app.include_router(admin_router, prefix="/admin/v1")
     return app

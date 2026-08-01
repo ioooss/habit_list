@@ -1,4 +1,5 @@
 """Production configuration and worker health invariants."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -15,10 +16,15 @@ from app.worker.runtime import heartbeat_is_fresh, write_heartbeat
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 HEARTBEAT_PATH = DATA_DIR / "pytest-worker-heartbeat.json"
 PRODUCTION_SECRETS = {
-    "api_auth_token": "test-user-token-000000000000000000000001",
-    "admin_token": "test-admin-token-00000000000000000000001",
+    "auth_mode": "sessions",
+    "auth_token_pepper": "production-test-pepper-000000000000000000001",
+    "pii_encryption_key": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+    "admin_mfa_encryption_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
+    "apple_client_ids": "com.example.innerterrain.tests",
     "dashscope_api_key": "sk-test-only-not-a-real-provider-key",
     "cors_allowed_origins": "https://admin.example.test",
+    "deploy_domain": "api.innerterrain.cn",
+    "deploy_email": "operator@innerterrain.cn",
 }
 
 
@@ -68,12 +74,42 @@ def test_production_rejects_wildcard_cors_and_placeholder_secrets():
     with pytest.raises(ValueError, match="CORS_ALLOWED_ORIGINS"):
         Settings(**base, **{**PRODUCTION_SECRETS, "cors_allowed_origins": "*"})
 
-    with pytest.raises(ValueError, match="高强度随机值"):
+    with pytest.raises(ValueError, match="AUTH_TOKEN_PEPPER"):
         Settings(
             **base,
             **{
                 **PRODUCTION_SECRETS,
-                "api_auth_token": "replace_with_a_long_random_user_token",
+                "auth_token_pepper": "replace_with_a_long_random_token_pepper",
+            },
+        )
+
+    with pytest.raises(ValueError, match="AUTH_MODE=sessions"):
+        Settings(**base, **{**PRODUCTION_SECRETS, "auth_mode": "legacy"})
+
+    with pytest.raises(ValueError, match="HTTPS Origin"):
+        Settings(
+            **base,
+            **{
+                **PRODUCTION_SECRETS,
+                "cors_allowed_origins": "http://admin.example.test",
+            },
+        )
+
+    with pytest.raises(ValueError, match="必须不同"):
+        Settings(
+            **base,
+            **{
+                **PRODUCTION_SECRETS,
+                "admin_mfa_encryption_key": PRODUCTION_SECRETS["pii_encryption_key"],
+            },
+        )
+
+    with pytest.raises(ValueError, match="DEPLOY_DOMAIN"):
+        Settings(
+            **base,
+            **{
+                **PRODUCTION_SECRETS,
+                "deploy_domain": "your.domain.example.com",
             },
         )
 

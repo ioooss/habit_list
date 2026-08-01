@@ -182,9 +182,11 @@ async def init_db(settings: Optional[Settings] = None) -> None:
     settings = settings or get_settings()
     engine = get_engine(settings)
     # Import every model before metadata inspection or create_all.
+    from ..admin import models as _admin_models  # noqa: F401, WPS433
+    from ..identity import models as _identity_models  # noqa: F401, WPS433
     from . import memory_models as _memory_models  # noqa: F401, WPS433 - 注册 V2 表
     from . import migrations  # noqa: WPS433 - 建虚表/默认数据
-    from .bootstrap import seed_transitional_defaults
+    from .bootstrap import seed_admin_rbac_defaults, seed_transitional_defaults
     from .models import Base  # noqa: WPS433 - 延迟导入触发注册
 
     async with engine.begin() as conn:
@@ -196,7 +198,16 @@ async def init_db(settings: Optional[Settings] = None) -> None:
             table_names = await conn.run_sync(
                 lambda sync_conn: set(sqlalchemy_inspect(sync_conn).get_table_names())
             )
-            required = {"alembic_version", "users", "memory_claims", "outbox_events"}
+            required = {
+                "alembic_version",
+                "users",
+                "memory_claims",
+                "outbox_events",
+                "sessions",
+                "refresh_tokens",
+                "admin_users",
+                "admin_audit_events",
+            }
             missing = sorted(required - table_names)
             if missing:
                 raise RuntimeError(
@@ -206,5 +217,6 @@ async def init_db(settings: Optional[Settings] = None) -> None:
         if settings.database_is_sqlite:
             await migrations.apply(conn, settings)
         await seed_transitional_defaults(conn, settings)
+        await seed_admin_rbac_defaults(conn)
 
     log.info("db init ok")

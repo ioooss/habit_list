@@ -45,6 +45,9 @@ class User(Base):
     __tablename__ = "users"
     user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     created_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso, onupdate=_utcnow_iso)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     locale: Mapped[str] = mapped_column(String(16), default="zh-CN")
     timezone: Mapped[str] = mapped_column(String(32), default="Asia/Shanghai")
     dashscope_quota: Mapped[int] = mapped_column(default=-1)

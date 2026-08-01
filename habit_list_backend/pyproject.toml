@@ -7,9 +7,9 @@ readme = "README.md"
 packages = [{ include = "app" }]
 
 [tool.poetry.dependencies]
-python = ">=3.11,<4"
+python = ">=3.11,<3.13"
 fastapi = ">=0.111,<0.116"
-uvicorn = {extras = ["standard"], version = ">=0.30"}
+uvicorn = {extras = ["standard"], version = ">=0.30,<1"}
 pydantic = ">=2.8,<3"
 pydantic-settings = ">=2.4,<3"
 sqlalchemy = {extras = ["asyncio"], version = ">=2.0.31,<3"}
@@ -17,6 +17,10 @@ alembic = ">=1.14,<2"
 aiosqlite = ">=0.20,<1"
 psycopg = {extras = ["binary"], version = ">=3.2,<4"}
 pgvector = ">=0.3,<1"
+pyjwt = {extras = ["crypto"], version = ">=2.10,<3"}
+cryptography = ">=43,<47"
+argon2-cffi = ">=23.1,<26"
+pyotp = ">=2.9,<3"
 apscheduler = ">=3.10.4,<4"
 httpx = ">=0.27,<1"
 tenacity = ">=8.5,<9"

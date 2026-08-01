@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import chat, insights, me, memories, memos, pebbles, speech
+from . import auth, chat, insights, me, memories, memos, pebbles, speech
 
 router = APIRouter()
+router.include_router(auth.router, tags=["身份与会话"])
 router.include_router(chat.router, tags=["共处·聊天"])
 router.include_router(memos.router, prefix="/memos", tags=["备忘"])
 router.include_router(pebbles.router, prefix="/pebbles", tags=["河·记忆石子"])
