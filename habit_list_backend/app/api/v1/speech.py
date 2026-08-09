@@ -1,4 +1,4 @@
-"""语音：ASR 上传音频 -> 文字（paraformer-v2）；TTS 文字 -> 音频（cosyvoice-v1）。"""
+"""语音：原始音频内联 ASR -> 文字；TTS 文字 -> 原始音频。"""
 from __future__ import annotations
 
 import logging
@@ -31,20 +31,26 @@ async def transcribe(
     if not raw:
         return {"ok": True, "text": ""}
     try:
-        txt = await dashscope.asr_transcribe(raw, fn)
+        result = await dashscope.asr_transcribe(raw, fn)
     except Exception as exc:  # noqa: BLE001
         log.exception("ASR fail")
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             detail={"ok": False, "code": "ASR_FAIL", "message": f"语音识别失败：{exc}"},
         )
-    return {"ok": True, "text": txt, "filename": fn, "bytes": len(raw)}
+    return {
+        "ok": True,
+        "text": result.text,
+        "confidence": result.confidence,
+        "filename": fn,
+        "bytes": len(raw),
+    }
 
 
 @router.post("/synthesize")
 async def synthesize(
     text: str = Form(..., min_length=1, max_length=2000),
-    voice: str = Form("longxiaochun"),
+    voice: str = Form("longanhuan_v3.6"),
     fmt: Literal["wav", "mp3"] = Form("wav"),
     user_id: str = Depends(current_user),
 ):

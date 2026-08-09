@@ -1,9 +1,14 @@
-"""石子接口（河·记忆河流）：列表 / 编辑 / 软删除 / 分类修正轨迹。"""
+"""Legacy Episodic compatibility API for migrated pebble data.
+
+The current product does not expose a memory-river entry point. Keep this
+surface only for old clients, data migration and user-controlled access to
+already stored records; new features belong under ``/moments`` or ``/terrain``.
+"""
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Literal, Optional
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -12,7 +17,8 @@ from sqlalchemy import select
 from ...db.database import get_db
 from ...db.models import Episodic, RawLedger
 from ...memory.forgetting import land as land_memory
-from ..v1.common import ApiError, BaseSchema, current_user
+from ...moments.service import delete_moment_cascade
+from ..v1.common import ApiError, BaseSchema, current_user, request_id
 
 log = logging.getLogger("habit_list.api.pebbles")
 router = APIRouter()
@@ -25,11 +31,11 @@ class PebbleOut(BaseSchema):
     created_at: str
     source: str
     kind: Kind
-    kind_fixed_from: Optional[str] = None
+    kind_fixed_from: str | None = None
     summary_1line: str
     emotion: str
     raw_user_text: str
-    raw_assistant_text: Optional[str] = None
+    raw_assistant_text: str | None = None
     retrieval_weight: float
 
 
@@ -43,21 +49,21 @@ class DayGroup(BaseSchema):
 class PebbleListResp(BaseSchema):
     total: int
     groups: list[DayGroup]
-    filter_kind: Optional[str] = None
+    filter_kind: str | None = None
 
 
 class PebblePatchReq(BaseModel):
-    summary_1line: Optional[str] = Field(default=None, max_length=256)
-    emotion: Optional[str] = Field(default=None, max_length=8)
-    kind: Optional[Kind] = None
-    raw_user_text: Optional[str] = None
-    raw_assistant_text: Optional[str] = None
+    summary_1line: str | None = Field(default=None, max_length=256)
+    emotion: str | None = Field(default=None, max_length=8)
+    kind: Kind | None = None
+    raw_user_text: str | None = None
+    raw_assistant_text: str | None = None
     land_it: bool = False  # 顺便捞起（权重回弹）
 
 
 @router.get("", response_model=PebbleListResp)
 async def list_pebbles(
-    kind: Optional[Kind] = Query(default=None),
+    kind: Kind | None = Query(default=None),
     q: str = Query(default="", max_length=120),
     limit: int = Query(default=120, ge=1, le=500),
     user_id: str = Depends(current_user),
@@ -104,7 +110,7 @@ async def list_pebbles(
 
 def _day_label(key: str) -> str:
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     try:
         d = datetime.strptime(key, "%Y-%m-%d").date()
     except Exception:  # noqa: BLE001
@@ -125,7 +131,7 @@ def label_of(key, buckets):  # pragma: no cover - 备用
 
 @router.patch("/{pid}", response_model=PebbleOut)
 async def patch_pebble(pid: str, req: PebblePatchReq, user_id: str = Depends(current_user)):
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     async with get_db(read_only=False) as db:
         p = (await db.execute(
             select(Episodic).where(Episodic.episodic_id == pid, Episodic.user_id == user_id)
@@ -164,13 +170,24 @@ async def patch_pebble(pid: str, req: PebblePatchReq, user_id: str = Depends(cur
 
 
 @router.delete("/{pid}")
-async def archive_pebble(pid: str, user_id: str = Depends(current_user)):
+async def archive_pebble(
+    pid: str,
+    user_id: str = Depends(current_user),
+    req_id: str = Depends(request_id),
+):
     async with get_db(read_only=False) as db:
         p = (await db.execute(
             select(Episodic).where(Episodic.episodic_id == pid, Episodic.user_id == user_id)
         )).scalar_one_or_none()
         if not p:
             raise ApiError("NOT_FOUND", "石子不存在", 404)
+        if p.kind == "life_fragment":
+            # Fragments need the full closed loop: thread interactions,
+            # queued responses, and terrain-derived events must follow deletion.
+            await delete_moment_cascade(
+                db, user_id=user_id, moment_id=pid, request_id=req_id
+            )
+            return {"ok": True, "archived": True}
         p.status = "archived"
         db.add(RawLedger(
             user_id=user_id, entry_type="pebble_archive",

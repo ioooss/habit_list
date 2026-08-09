@@ -20,6 +20,10 @@ x-backend-common: &backend-common
     - ALL
   pids_limit: 256
   logging: *default-logging
+  # The container filesystem is read-only; user-owned original images/audio
+  # live in a dedicated volume so API and worker restarts do not erase them.
+  volumes:
+    - media_data:/app/data/media
   networks:
     - backend
 
@@ -135,6 +139,7 @@ services:
 
 volumes:
   postgres_data:
+  media_data:
 
 networks:
   edge:

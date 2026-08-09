@@ -60,7 +60,8 @@ done
 
 [[ "${DEPLOY_CONFIRM:-}" == "inner-terrain-staging" ]] || \
   fail "set DEPLOY_CONFIRM=inner-terrain-staging to confirm a staging deployment"
-[[ -n "$REPO_ROOT" && -d "$REPO_ROOT/.git" ]] || fail "project is not inside a Git worktree"
+[[ -n "$REPO_ROOT" && "$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>/dev/null || true)" == "true" ]] || \
+  fail "project is not inside a Git worktree"
 [[ -f "$ENV_FILE" ]] || fail "missing $ENV_FILE; run deploy/prepare_staging_secrets.sh first"
 [[ -f "$HTPASSWD_FILE" ]] || fail "missing $HTPASSWD_FILE"
 [[ -f "$ACCESS_FILE" ]] || fail "missing $ACCESS_FILE"
@@ -90,6 +91,7 @@ mkdir -p -- "$TMP_ROOT"
 ARCHIVE_PATH="$TMP_ROOT/inner-terrain-staging-$RELEASE_ID-$$.tar.gz"
 WEB_PATH="$TMP_ROOT/inner-terrain-web-$RELEASE_ID-$$.html"
 IMAGE_ARCHIVE_PATH="$TMP_ROOT/inner-terrain-images-$RELEASE_ID-$$.tar.gz"
+DESIGN_ARCHIVE_PATH="$TMP_ROOT/inner-terrain-design-$RELEASE_ID-$$.tar.gz"
 
 cleanup() {
   case "$ARCHIVE_PATH" in
@@ -103,6 +105,10 @@ cleanup() {
   case "$IMAGE_ARCHIVE_PATH" in
     "$TMP_ROOT"/*) [[ ! -f "$IMAGE_ARCHIVE_PATH" ]] || rm -f -- "$IMAGE_ARCHIVE_PATH" ;;
     *) printf 'warning: refusing to remove unexpected temporary path: %s\n' "$IMAGE_ARCHIVE_PATH" >&2 ;;
+  esac
+  case "$DESIGN_ARCHIVE_PATH" in
+    "$TMP_ROOT"/*) [[ ! -f "$DESIGN_ARCHIVE_PATH" ]] || rm -f -- "$DESIGN_ARCHIVE_PATH" ;;
+    *) printf 'warning: refusing to remove unexpected temporary path: %s\n' "$DESIGN_ARCHIVE_PATH" >&2 ;;
   esac
 }
 trap cleanup EXIT
@@ -124,6 +130,10 @@ git -C "$REPO_ROOT" archive \
   migrations \
   pyproject.toml
 git -C "$REPO_ROOT" show "$REVISION:app.html" > "$WEB_PATH"
+git -C "$REPO_ROOT" archive \
+  --format=tar.gz \
+  --output="$DESIGN_ARCHIVE_PATH" \
+  "$REVISION:design/brand/avatar"
 
 if ! ARCHIVE_CONTENTS="$(tar -tzf "$ARCHIVE_PATH")"; then
   fail "could not inspect the release archive"
@@ -136,6 +146,11 @@ fi
 grep -qx 'docker-compose.staging.yml' <<<"$ARCHIVE_CONTENTS" || \
   fail "staging compose file is missing from the release archive"
 [[ -s "$WEB_PATH" ]] || fail "could not export committed app.html"
+if ! DESIGN_ARCHIVE_CONTENTS="$(tar -tzf "$DESIGN_ARCHIVE_PATH")"; then
+  fail "could not inspect the design asset archive"
+fi
+grep -qx 'inner-terrain-avatar-256.png' <<<"$DESIGN_ARCHIVE_CONTENTS" || \
+  fail "the design asset archive is missing inner-terrain-avatar-256.png"
 
 if [[ "$PRELOAD_IMAGES" == "1" ]]; then
   for image_name in "${PRELOAD_IMAGE_NAMES[@]}"; do
@@ -183,6 +198,7 @@ ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
 printf '[3/8] Upload committed code, Web entry, and ignored staging configuration...\n'
 scp "${SSH_OPTIONS[@]}" "$ARCHIVE_PATH" "$SSH_TARGET:$RELEASE_DIR/.bundle.tar.gz"
 scp "${SSH_OPTIONS[@]}" "$WEB_PATH" "$SSH_TARGET:$RELEASE_DIR/.app.html.next"
+scp "${SSH_OPTIONS[@]}" "$DESIGN_ARCHIVE_PATH" "$SSH_TARGET:$RELEASE_DIR/.design.tar.gz"
 scp "${SSH_OPTIONS[@]}" "$ENV_FILE" "$SSH_TARGET:$RELEASE_DIR/.env.staging.next"
 scp "${SSH_OPTIONS[@]}" "$HTPASSWD_FILE" "$SSH_TARGET:$RELEASE_DIR/.staging.htpasswd.next"
 if [[ "$PRELOAD_IMAGES" == "1" ]]; then
@@ -191,7 +207,7 @@ fi
 
 printf '[4/8] Extract and validate the release on the server...\n'
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-  "set -eu; cd '$RELEASE_DIR'; tar -xzf .bundle.tar.gz; install -d -m 0755 web; chmod 0644 .app.html.next; mv .app.html.next web/app.html; chmod 0600 .env.staging.next; mv .env.staging.next .env.staging; chmod 0644 .staging.htpasswd.next; mv .staging.htpasswd.next deploy/staging.htpasswd; rm -f -- .bundle.tar.gz; export APP_ENV_FILE=.env.staging; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' config --quiet"
+  "set -eu; cd '$RELEASE_DIR'; tar -xzf .bundle.tar.gz; install -d -m 0755 web; install -d -m 0755 web/design/brand/avatar; tar -xzf .design.tar.gz -C web/design/brand/avatar; test -s web/design/brand/avatar/inner-terrain-avatar-256.png; rm -f -- .bundle.tar.gz .design.tar.gz; chmod 0644 .app.html.next; mv .app.html.next web/app.html; chmod 0600 .env.staging.next; mv .env.staging.next .env.staging; chmod 0644 .staging.htpasswd.next; mv .staging.htpasswd.next deploy/staging.htpasswd; export APP_ENV_FILE=.env.staging; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' config --quiet"
 if [[ "$PRELOAD_IMAGES" == "1" ]]; then
   ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
     "set -eu; cd '$RELEASE_DIR'; gzip -t .images.tar.gz; gzip -dc .images.tar.gz | docker load; rm -f -- .images.tar.gz; docker image inspect inner-terrain-backend:staging pgvector/pgvector:0.8.2-pg17-bookworm nginx:1.27-alpine '$CERTBOT_IMAGE' >/dev/null"
@@ -238,11 +254,11 @@ fi
 
 printf '[8/8] Enable HTTPS, verify the protected entry, and mark the release current...\n'
 ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
-  "set -eu; cd '$RELEASE_DIR'; export APP_ENV_FILE=.env.staging; unset STAGING_NGINX_TEMPLATE; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' up -d --no-build --force-recreate nginx certbot-renew; for attempt in \$(seq 1 20); do if curl -fsS --resolve '$SERVER:443:127.0.0.1' --user '$access_username:$access_password' 'https://$SERVER/ready' >/dev/null; then break; fi; if [ \"\$attempt\" -eq 20 ]; then docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' logs --tail=80 nginx; exit 1; fi; sleep 2; done; if [ -L '$REMOTE_DIR/current' ]; then previous=\$(readlink -f '$REMOTE_DIR/current'); case \"\$previous\" in '$REMOTE_DIR/releases/'*) ln -sfn \"\$previous\" '$REMOTE_DIR/previous.next'; mv -Tf '$REMOTE_DIR/previous.next' '$REMOTE_DIR/previous' ;; esac; fi; ln -sfn '$RELEASE_DIR' '$REMOTE_DIR/current.next'; mv -Tf '$REMOTE_DIR/current.next' '$REMOTE_DIR/current'; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' ps"
+  "set -eu; cd '$RELEASE_DIR'; export APP_ENV_FILE=.env.staging; unset STAGING_NGINX_TEMPLATE; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' up -d --no-build --force-recreate app worker nginx certbot-renew; for attempt in \$(seq 1 20); do if curl -fsS --resolve '$SERVER:443:127.0.0.1' --user '$access_username:$access_password' 'https://$SERVER/ready' >/dev/null; then break; fi; if [ \"\$attempt\" -eq 20 ]; then docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' logs --tail=80 nginx; exit 1; fi; sleep 2; done; if [ -L '$REMOTE_DIR/current' ]; then previous=\$(readlink -f '$REMOTE_DIR/current'); case \"\$previous\" in '$REMOTE_DIR/releases/'*) ln -sfn \"\$previous\" '$REMOTE_DIR/previous.next'; mv -Tf '$REMOTE_DIR/previous.next' '$REMOTE_DIR/previous' ;; esac; fi; ln -sfn '$RELEASE_DIR' '$REMOTE_DIR/current.next'; mv -Tf '$REMOTE_DIR/current.next' '$REMOTE_DIR/current'; docker compose --env-file .env.staging -f '$BASE_COMPOSE_FILE' -f '$STAGING_COMPOSE_FILE' ps"
 
 curl --fail --silent --show-error --max-time 20 \
-  --config <(printf 'user = "%s:%s"\nurl = "https://%s/ready"\n' \
-    "$access_username" "$access_password" "$SERVER") >/dev/null
+  --user "$access_username:$access_password" \
+  --url "https://$SERVER/ready" >/dev/null
 
 printf 'Staging deployment completed: https://%s (%s). Credentials remain in %s.\n' \
   "$SERVER" "$REVISION" "$ACCESS_FILE"

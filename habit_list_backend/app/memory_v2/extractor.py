@@ -19,11 +19,17 @@ from .domain import (
 log = logging.getLogger("habit_list.memory_v2.extractor")
 
 
-_SENSITIVE_KEYWORDS = re.compile(
-    r"病|诊断|药|抑郁|焦虑症|自残|自杀|想死|不想活|工资|收入|负债|欠款|"
-    r"住址|地址|身份证|银行卡|宗教|政治|性取向|性生活"
+_CRISIS_KEYWORDS = re.compile(
+    r"自杀|自残|轻生|寻死|想死|不想(?:继续|再)?活|活不下去|"
+    r"结束(?:自己|生命)|伤害自己|割腕|跳楼|服药自杀|"
+    r"(?:kill|hurt)\s+myself|self[- ]?harm|end\s+my\s+life|"
+    r"(?:do\s+not|don't)\s+want\s+to\s+live|can't\s+(?:go|keep)\s+on",
+    re.IGNORECASE,
 )
-_CRISIS_KEYWORDS = re.compile(r"自杀|自残|想死|不想活|结束生命|活不下去")
+_SENSITIVE_KEYWORDS = re.compile(
+    r"病|诊断|药|抑郁|焦虑症|工资|收入|负债|欠款|"
+    r"住址|地址|身份证|银行卡|宗教|政治|性取向|性生活|" + _CRISIS_KEYWORDS.pattern
+)
 
 
 @dataclass(frozen=True)

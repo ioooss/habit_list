@@ -46,6 +46,7 @@ _AUTO_CONFIRM_CATEGORIES = {
 }
 _OPEN_STATUSES = {
     UserStatus.PROPOSED.value,
+    UserStatus.DEFERRED.value,
     UserStatus.CONFIRMED.value,
     UserStatus.CORRECTED.value,
 }
@@ -123,7 +124,11 @@ def ground_evidence(atom: MemoryAtom, source_text: str) -> GroundedEvidence | No
     start = source_text.find(atom.evidence_text)
     if start < 0:
         return None
-    return GroundedEvidence(start=start, end=start + len(atom.evidence_text), text=atom.evidence_text)
+    return GroundedEvidence(
+        start=start,
+        end=start + len(atom.evidence_text),
+        text=atom.evidence_text,
+    )
 
 
 def _auto_status(atom: MemoryAtom, settings: Settings) -> UserStatus:
@@ -309,6 +314,19 @@ async def reconcile_event(
             )
         ).scalars().all()
         claims = list(rows)
+        # A user rejection is a durable correction, not a one-shot UI state.
+        # Do not let a replayed event or a later extraction recreate the exact
+        # same interpretation under a fresh Claim id.  The claim remains in
+        # the audit trail so the user can understand what was rejected; hard
+        # deletion removes it from this guard as well.
+        if any(
+            claim.content_hash == content_hash
+            and claim.user_status
+            in {UserStatus.REJECTED.value, UserStatus.HIDDEN.value}
+            for claim in claims
+        ):
+            result.skipped_atoms += 1
+            continue
         current = next(
             (
                 claim
@@ -317,7 +335,12 @@ async def reconcile_event(
                 in {UserStatus.CONFIRMED.value, UserStatus.CORRECTED.value}
             ),
             next(
-                (claim for claim in claims if claim.user_status == UserStatus.PROPOSED.value),
+                (
+                    claim
+                    for claim in claims
+                    if claim.user_status
+                    in {UserStatus.PROPOSED.value, UserStatus.DEFERRED.value}
+                ),
                 None,
             ),
         )

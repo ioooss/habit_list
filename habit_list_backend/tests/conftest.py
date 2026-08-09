@@ -27,6 +27,12 @@ os.environ["SQLITE_VSS_EXT_PATH"] = ""
 os.environ["FTS5_TOKENIZER"] = "unicode61"
 os.environ["SYSTEM2_SLEEP_CONSOLIDATION_CRON"] = "0 23 31 2 4"
 os.environ["SYSTEM2_EBBINGHAUS_CRON"] = "0 23 31 2 4"
+# 记忆链路按生产形态跑（active），但抽取与向量必须钉成离线确定值：
+# hybrid 会真的调 LLM，embedding 会真的调向量服务，两者都让测试变成网络测试。
+# 需要验证这两条分支的用例自己 model_copy 出对应 Settings。
+os.environ["MEMORY_V2_MODE"] = "active"
+os.environ["MEMORY_V2_EXTRACTOR_MODE"] = "rules"
+os.environ["MEMORY_V2_EMBEDDING_ENABLED"] = "false"
 
 
 def _wipe_test_db():
@@ -35,8 +41,9 @@ def _wipe_test_db():
         Path(TEST_DB_PATH).unlink(missing_ok=True)
         for suf in ("-wal", "-shm", "-journal"):
             Path(TEST_DB_PATH + suf).unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        return exc
+    return None
 
 
 # 会话开始前先删一次旧 DB
@@ -46,12 +53,62 @@ _wipe_test_db()
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import inspect  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.db import database as db_mod  # noqa: E402
 from app.memory import system2 as system2_mod  # noqa: E402
 from app.providers import dashscope as dashscope_provider  # noqa: E402
 from app.retrieval import graph as graph_mod  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_singletons_between_tests():
+    """Reset process-local caches after each test.
+
+    Keep database engine references until ``app_no_scheduler`` can await
+    ``dispose()`` before deleting the SQLite test file on Windows.
+    """
+
+    yield
+    dashscope_provider._clients.clear()
+    system2_mod._scheduler = None
+    graph_mod._GRAPHS_BY_USER.clear()
+    graph_mod._NODE_NORM_NAMES_BY_USER.clear()
+    graph_mod._GRAPH_VERSION += 1
+    get_settings.cache_clear()
+
+
+async def _clear_locked_test_db() -> None:
+    """Clear rows when Windows still has the previous SQLite file open."""
+
+    if not Path(TEST_DB_PATH).exists():
+        return
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{TEST_DB_PATH}",
+        connect_args={"check_same_thread": False},
+    )
+    try:
+        async with engine.begin() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: inspect(sync_conn).get_table_names()
+            )
+            await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            for table_name in table_names:
+                if table_name.startswith("sqlite_") or table_name.endswith("_fts"):
+                    continue
+                quoted = table_name.replace('"', '""')
+                try:
+                    await conn.exec_driver_sql(f'DELETE FROM "{quoted}"')
+                except Exception:
+                    # External-content FTS/optional virtual tables can expose
+                    # no ordinary columns; base-table deletes already clear
+                    # their triggers, so they are safe to skip here.
+                    continue
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    finally:
+        await engine.dispose()
 
 # 让 lru_cache 立刻重新拿测试值
 get_settings.cache_clear()
@@ -85,7 +142,8 @@ async def app_no_scheduler(monkeypatch, test_settings: Settings) -> FastAPI:
         await engine.dispose()
     db_mod._engines.clear()
     db_mod._sessionmakers.clear()
-    _wipe_test_db()
+    if _wipe_test_db() is not None:
+        await _clear_locked_test_db()
 
     # 清掉其余单例缓存，保证每个用例从空状态启动。
     dashscope_provider._clients.clear()

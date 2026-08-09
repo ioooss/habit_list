@@ -14,6 +14,7 @@ from ..core.config import Settings, get_settings
 from ..db.bootstrap import PROCEDURAL_DEFAULTS
 from ..db.database import get_sessionmaker
 from ..db.models import Procedural, User, _utcnow_iso, uuid7
+from ..memory.situation import FALLBACK_TIMEZONE, is_known_timezone
 from .apple import (
     AppleIdentityClaims,
     AppleIdentityUnavailableError,
@@ -372,7 +373,10 @@ async def exchange_apple_identity(
             user = User(
                 user_id=str(uuid7()),
                 locale=locale,
-                timezone=timezone_name,
+                # 客户端报的时区名认不出来就退回默认：登录不该因为一个时区字符串失败，
+                # 但也不能存一个 zoneinfo 认不出的名字——生成路径靠它算深夜档
+                # （声音基线 §4）。用户之后可以在「它」页改，那条路会拒绝无效值。
+                timezone=timezone_name if is_known_timezone(timezone_name) else FALLBACK_TIMEZONE,
                 status="active",
                 updated_at=now_iso,
             )

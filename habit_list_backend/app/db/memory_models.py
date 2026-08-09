@@ -54,6 +54,13 @@ class UserEvent(Base):
     recorded_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso, index=True)
     sensitivity: Mapped[str] = mapped_column(String(16), default="normal", index=True)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    # Whether this source is allowed to become terrain evidence.  Life fragments
+    # default to False and require an explicit opt-in; companion turns are
+    # eligible unless a safety, sensitivity, or pause gate rejects them.  Keeping
+    # this on the row rather than in the calling router means no write path can
+    # forge the permission and the terrain projection reads the same value the
+    # writer committed.
+    terrain_eligible: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     source_ref_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=_JSON_DEFAULT_DICT)
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -88,6 +95,11 @@ class MemoryClaim(Base):
     sensitivity: Mapped[str] = mapped_column(String(16), default="normal", index=True)
     valid_from: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     valid_to: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    terrain_state: Mapped[str] = mapped_column(String(24), default="forming", index=True)
+    terrain_user_label: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    terrain_first_revealed_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    terrain_last_changed_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    terrain_history_json: Mapped[list] = mapped_column(JSON, default=_JSON_DEFAULT_LIST)
     observed_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
     supersedes_claim_id: Mapped[Optional[str]] = mapped_column(

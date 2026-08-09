@@ -57,6 +57,11 @@ async def ensure_embeddings_for(session: "AsyncSession", user_id: str, episodic_
         # PostgreSQL long-term vectors are owned by Memory V2/pgvector. Do not
         # spend model calls on the legacy sqlite-vss table path.
         return
+    if not settings.sqlite_vss_ext_path:
+        # The optional extension is not configured in the local SQLite
+        # preview.  Avoid a needless embedding request before the SQL fallback
+        # discovers that vss0 is unavailable.
+        return
     if not episodic_ids:
         return
     id_list = list(dict.fromkeys(episodic_ids))  # 去重保序
@@ -118,6 +123,10 @@ async def search(
     """1) dashscope embed query → 2) vss_topk episodic_vec cosine distance → 返回相似度"""
     settings = settings or get_settings()
     if session.get_bind().dialect.name != "sqlite":
+        return []
+    if not settings.sqlite_vss_ext_path:
+        # Keep local validation deterministic and cost-free when sqlite-vss is
+        # intentionally absent; PostgreSQL uses the Memory V2 pgvector path.
         return []
     dim = _emb_dim(settings)
     if not settings.dashscope_api_key:

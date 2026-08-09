@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, or_, select
@@ -20,8 +21,20 @@ from ..db.memory_models import (
     UserEvent,
 )
 from ..db.models import _utcnow_iso
-from .domain import MemoryCategory, RetrievalBatch, SourceType, UserStatus
+from .domain import (
+    EvidenceRole,
+    MemoryCategory,
+    RetrievalBatch,
+    Sensitivity,
+    SourceType,
+    UserStatus,
+)
 from .extractor import infer_sensitivity
+from .formation import (
+    FORMATION_SCAN_REQUESTED,
+    FORMATION_TOMBSTONE_TYPE,
+    formation_fingerprint,
+)
 from .reconcile import (
     EMBEDDING_REQUESTED,
     claim_keys_from_fields,
@@ -92,12 +105,19 @@ async def enqueue_user_event(
     request_id: str,
     content: str,
     mode: str,
+    terrain_eligible: bool,
+    source: str = "chat",
     occurred_at: str | None = None,
     client_event_id: str | None = None,
     source_ref_id: str | None = None,
     settings: Settings | None = None,
 ) -> EnqueuedUserEvent | None:
-    """Persist a user source event and its extraction request atomically."""
+    """Persist a user source event and its extraction request atomically.
+
+    ``terrain_eligible`` has no default on purpose.  Whether a source may become
+    terrain evidence is a product permission, and a silent default would let a
+    new write path grant or withhold it by accident.
+    """
 
     settings = settings or get_settings()
     if settings.memory_v2_mode == "off":
@@ -115,12 +135,16 @@ async def enqueue_user_event(
 
     now = occurred_at or _utcnow_iso()
     sensitivity = infer_sensitivity(content, MemoryCategory.OTHER)
+    # Content-derived safety overrides the caller's intent.  Crisis and sensitive
+    # material never becomes terrain evidence even if a write path asks for it,
+    # so a future caller cannot grant the permission by mistake.
+    effective_terrain_eligible = terrain_eligible and sensitivity == Sensitivity.NORMAL
     event = UserEvent(
         user_id=user_id,
         session_id=session_id,
         request_id=request_id,
         client_event_id=client_event_id,
-        source="chat",
+        source=source,
         mode=mode,
         content=content,
         content_hash=_sha256(content),
@@ -128,6 +152,7 @@ async def enqueue_user_event(
         recorded_at=_utcnow_iso(),
         sensitivity=sensitivity.value,
         status="active",
+        terrain_eligible=effective_terrain_eligible,
         source_ref_id=source_ref_id,
         metadata_json={"policy_version": settings.memory_v2_policy_version},
     )
@@ -144,6 +169,53 @@ async def enqueue_user_event(
     session.add(outbox)
     await session.flush()
     return EnqueuedUserEvent(event_id=event.event_id, outbox_id=outbox.outbox_id, created=True)
+
+
+async def enqueue_formation_scan(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    settings: Settings | None = None,
+) -> str | None:
+    """Schedule one debounced formation pass for a user.
+
+    A scan reads every eligible claim of that user, so running it per new event
+    would be both wasteful and, worse, would surface a forming feature within
+    seconds of the message that completed it.  The delay is the product behaviour:
+    a formation should arrive later, not as an instant reaction.  While a scan is
+    still queued, further evidence simply joins it instead of queueing another.
+    """
+
+    settings = settings or get_settings()
+    if settings.memory_v2_mode == "off" or not settings.memory_v3_formation_enabled:
+        return None
+    queued = (
+        await session.execute(
+            select(OutboxEvent.outbox_id)
+            .where(
+                OutboxEvent.user_id == user_id,
+                OutboxEvent.event_type == FORMATION_SCAN_REQUESTED,
+                OutboxEvent.status.in_(["pending", "processing"]),
+            )
+            .limit(1)
+        )
+    ).first()
+    if queued is not None:
+        return None
+    available_at = (
+        datetime.now(UTC) + timedelta(seconds=settings.memory_v3_scan_debounce_seconds)
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    outbox = OutboxEvent(
+        user_id=user_id,
+        aggregate_type="user",
+        aggregate_id=user_id,
+        event_type=FORMATION_SCAN_REQUESTED,
+        available_at=available_at,
+        payload_json={},
+    )
+    session.add(outbox)
+    await session.flush()
+    return outbox.outbox_id
 
 
 async def record_retrieval_trace(
@@ -224,6 +296,7 @@ async def transition_claim(
     settings = settings or get_settings()
     target = {
         "confirm": UserStatus.CONFIRMED,
+        "defer": UserStatus.DEFERRED,
         "reject": UserStatus.REJECTED,
         "hide": UserStatus.HIDDEN,
         "restore": UserStatus.CONFIRMED,
@@ -233,9 +306,11 @@ async def transition_claim(
     if claim.user_status == target.value:
         return claim
     allowed_sources = {
-        "confirm": {UserStatus.PROPOSED.value},
+        "confirm": {UserStatus.PROPOSED.value, UserStatus.DEFERRED.value},
+        "defer": {UserStatus.PROPOSED.value},
         "reject": {
             UserStatus.PROPOSED.value,
+            UserStatus.DEFERRED.value,
             UserStatus.CONFIRMED.value,
             UserStatus.CORRECTED.value,
             UserStatus.HIDDEN.value,
@@ -254,7 +329,7 @@ async def transition_claim(
     if action in {"confirm", "restore"}:
         claim.source_type = SourceType.USER_CONFIRMED.value
         claim.confidence = max(float(claim.confidence), 0.99)
-    if action in {"reject", "hide"}:
+    if action in {"defer", "reject", "hide"}:
         claim.allow_proactive = False
     claim.updated_at = _utcnow_iso()
 
@@ -377,13 +452,15 @@ async def permanently_delete_claim(
     evidence_bindings = list(
         (
             await session.execute(
-                select(MemoryEvidence.event_id, MemoryEvidence.excerpt_text).where(
-                    MemoryEvidence.claim_id == claim.claim_id
-                )
+                select(
+                    MemoryEvidence.event_id,
+                    MemoryEvidence.excerpt_text,
+                    MemoryEvidence.evidence_role,
+                ).where(MemoryEvidence.claim_id == claim.claim_id)
             )
         ).all()
     )
-    for event_id, excerpt_text in evidence_bindings:
+    for event_id, excerpt_text, _role in evidence_bindings:
         session.add(
             MemoryDeletionTombstone(
                 resource_type="memory_claim_evidence",
@@ -396,6 +473,26 @@ async def permanently_delete_claim(
                 request_id=request_id,
             )
         )
+    if claim.source_type == SourceType.FORMATION.value:
+        # The source events survive a formation deletion, so the next scan would
+        # rebuild the same feature from the same evidence.  Fingerprinting the
+        # supporting set is what makes the deletion durable.
+        supporting = [
+            event_id
+            for event_id, _text, role in evidence_bindings
+            if role == EvidenceRole.SUPPORTS.value
+        ]
+        if supporting:
+            session.add(
+                MemoryDeletionTombstone(
+                    resource_type=FORMATION_TOMBSTONE_TYPE,
+                    resource_hash=formation_fingerprint(
+                        user_id=claim.user_id, event_ids=supporting
+                    ),
+                    actor_type="user",
+                    request_id=request_id,
+                )
+            )
     await session.execute(
         delete(MemoryRelation).where(
             MemoryRelation.user_id == claim.user_id,
@@ -420,6 +517,7 @@ __all__ = [
     "EXTRACTION_REQUESTED",
     "EnqueuedUserEvent",
     "correct_claim",
+    "enqueue_formation_scan",
     "enqueue_user_event",
     "get_claim_for_user",
     "permanently_delete_claim",

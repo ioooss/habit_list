@@ -1,10 +1,10 @@
-"""阿里云 DashScope 兼容 OpenAI /compatible-mode/v1 模式的异步封装。
+"""阿里云 DashScope 的异步封装。
 
 覆盖：
 - chat/completions       SSE 流式（共处 AI 回应）
 - embeddings             qwen-embedding-v3（向量化用于向量检索）
-- audio/transcriptions   paraformer-v2（ASR 语音转文字，multipart）
-- audio/speech           cosyvoice-v1（TTS 文字转语音）
+- multimodal-generation  qwen3-asr-flash（原始语音内联 ASR）
+- /api/v1/services/audio/tts/SpeechSynthesizer（非实时 TTS 文字转语音）
 - moderations            内容审核（敏感词）
 
 使用 tenacity 做 2 次指数退避；用 sliding log 做 RPM 限流。
@@ -12,7 +12,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
+import mimetypes
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -25,6 +28,7 @@ from typing import (
     Literal,
     Optional,
 )
+from urllib.parse import urlsplit
 
 import httpx
 from tenacity import (
@@ -165,9 +169,16 @@ async def chat_stream(
 
     async def _call() -> httpx.Response:
         client = _get_client(settings)
-        resp = await client.post("/chat/completions", headers=headers, json=payload)
+        # ``post()`` eagerly buffers the response body.  Build/send the request
+        # with ``stream=True`` so the caller can forward each provider chunk as
+        # soon as it arrives; the response is closed by the generator below.
+        request = client.build_request(
+            "POST", "/chat/completions", headers=headers, json=payload
+        )
+        resp = await client.send(request, stream=True)
         if resp.status_code >= 400:
             await resp.aread()
+            await resp.aclose()
             log.error("DashScope chat HTTP %s model=%s", resp.status_code, model)
             raise httpx.HTTPStatusError(
                 f"HTTP {resp.status_code}", request=resp.request, response=resp
@@ -363,38 +374,224 @@ async def embed_texts(
 
 
 # =========================================================
-# ASR（上传音频文件 → 文字）
+# ASR（原始音频 → 文字）
 # =========================================================
+ASR_INLINE_ENDPOINT = "/api/v1/services/aigc/multimodal-generation/generation"
+
+
+def _absolute_provider_url(settings: Settings, path: str) -> str:
+    """Build a root-relative provider URL while preserving the configured host.
+
+    The shared client uses ``/compatible-mode/v1`` as its base path for the
+    OpenAI-compatible APIs.  Native DashScope services live at the host root,
+    so passing a plain string to ``AsyncClient`` would append the path to the
+    compatibility prefix.
+    """
+    base = httpx.URL(settings.dashscope_base_url)
+    return str(base.copy_with(path=path, query=None, fragment=None))
+
+
+def _raise_provider_http_error(resp: httpx.Response, description: str) -> None:
+    """Raise a compact provider error without logging request bodies or audio."""
+    if resp.status_code < 400:
+        return
+    code = ""
+    message = ""
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            code = str(payload.get("code") or "")
+            message = str(payload.get("message") or "")
+    except (ValueError, TypeError):
+        pass
+    detail = f" {code}: {message}" if code or message else ""
+    raise httpx.HTTPStatusError(
+        f"{description} HTTP {resp.status_code}{detail}",
+        request=resp.request,
+        response=resp,
+    )
+
+
+def _extract_asr_text(payload: Any) -> str:
+    """Extract text from DashScope's Qwen ASR response."""
+    if not isinstance(payload, dict):
+        return ""
+    direct = payload.get("text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    choices = (payload.get("output") or {}).get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                str(item.get("text") or "").strip()
+                for item in content
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            ]
+            if parts:
+                return "\n".join(parts)
+    transcripts = payload.get("transcripts")
+    if isinstance(transcripts, list):
+        parts = [
+            str(item.get("text") or "").strip()
+            for item in transcripts
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        if parts:
+            return "\n".join(parts)
+    output = payload.get("output")
+    if isinstance(output, dict):
+        return _extract_asr_text(output)
+    return ""
+
+
+def _extract_asr_confidence(payload: Any) -> float | None:
+    """The worst segment confidence the provider reported, or ``None``.
+
+    Qwen's inline ASR endpoint currently reports no confidence at all, so this
+    returns ``None`` for the path the app actually uses.  That is deliberate:
+    an unknown confidence must stay unknown rather than be optimistically
+    filled in, because ``memory_v3_min_asr_confidence`` decides whether a
+    machine's guess at someone's words may be used to infer things about them.
+
+    The worst segment governs the whole transcript: one misheard clause is
+    enough to poison an inference drawn from the sentence around it.
+    """
+
+    scores: list[float] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "confidence" and isinstance(value, (int, float)):
+                    scores.append(float(value))
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(payload)
+    if not scores:
+        return None
+    return max(0.0, min(1.0, min(scores)))
+
+
+@dataclass(frozen=True)
+class Transcription:
+    """A transcript plus how much the provider vouched for it."""
+
+    text: str
+    confidence: float | None = None
+
+
 async def asr_transcribe(
     audio_bytes: bytes,
     filename: str,
     *,
     model: Optional[str] = None,
     settings: Optional[Settings] = None,
-) -> str:
+) -> Transcription:
     settings = settings or get_settings()
-    model = model or settings.dashscope_asr_model
-    headers = {"Authorization": f"Bearer {settings.dashscope_api_key.strip()}"}
-    files = {"file": (filename, audio_bytes, "application/octet-stream")}
-    data = {"model": model, "response_format": "json"}
+    if not audio_bytes:
+        return Transcription(text="")
+    requested_model = model or settings.dashscope_asr_model
+    # The batch Paraformer endpoint needs a provider-reachable file URL.  This
+    # API receives bytes from a private local media store, so use the inline
+    # Qwen ASR endpoint instead; it avoids copying the recording to provider OSS.
+    asr_model = (
+        requested_model
+        if requested_model.startswith("qwen3-asr")
+        else settings.dashscope_asr_inline_model
+    )
+    content_type = mimetypes.guess_type(filename or "audio.bin")[0] or "application/octet-stream"
+    audio_data_url = f"data:{content_type};base64,{base64.b64encode(audio_bytes).decode('ascii')}"
+    headers = {
+        "Authorization": f"Bearer {settings.dashscope_api_key.strip()}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": asr_model,
+        "input": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"audio": audio_data_url}],
+                }
+            ]
+        },
+        "parameters": {"result_format": "message"},
+    }
 
-    async def _call():
+    async def _call() -> dict[str, Any]:
         client = _get_client(settings)
-        resp = await client.post("/audio/transcriptions", headers=headers, data=data, files=files)
-        resp.raise_for_status()
-        return resp.json()
+        resp = await client.post(
+            _absolute_provider_url(settings, ASR_INLINE_ENDPOINT),
+            headers=headers,
+            json=payload,
+        )
+        _raise_provider_http_error(resp, f"DashScope ASR model={asr_model}")
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("DashScope ASR response is not an object")
+        return data
 
-    data = await _run_with_retry(_call, settings, description=f"asr {filename}")
-    return str(data.get("text") or "").strip()
+    result = await _run_with_retry(
+        _call, settings, description=f"asr request len={len(audio_bytes)} model={asr_model}"
+    )
+    return Transcription(
+        text=_extract_asr_text(result),
+        confidence=_extract_asr_confidence(result),
+    )
 
 
 # =========================================================
 # TTS（文字 → 音频 bytes）
 # =========================================================
+TTS_ENDPOINT = "/api/v1/services/audio/tts/SpeechSynthesizer"
+
+
+def _decode_tts_audio_data(value: Any) -> bytes:
+    """Decode the provider's optional inline base64 audio payload."""
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+    elif isinstance(value, str) and value.strip():
+        encoded = value.strip()
+        if encoded.startswith("data:"):
+            try:
+                encoded = encoded.split(",", 1)[1]
+            except IndexError as exc:  # pragma: no cover - defensive
+                raise ValueError("TTS inline audio data URL is malformed") from exc
+        encoded = "".join(encoded.split())
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("TTS inline audio data is not valid base64") from exc
+    else:
+        raise ValueError("TTS response contains no inline audio data")
+    if not raw:
+        raise ValueError("TTS inline audio data is empty")
+    return raw
+
+
+def _validate_tts_audio_url(value: Any) -> str:
+    """Accept only absolute HTTP(S) URLs returned by DashScope."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("TTS response contains neither audio data nor audio URL")
+    url = value.strip()
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("TTS audio URL must be an absolute HTTP(S) URL")
+    return url
+
+
 async def tts_synthesize(
     text: str,
     *,
-    voice: str = "longxiaochun",
+    voice: str = "longanhuan_v3.6",
     model: Optional[str] = None,
     response_format: str = "wav",
     settings: Optional[Settings] = None,
@@ -407,18 +604,56 @@ async def tts_synthesize(
     }
     payload = {
         "model": model,
-        "voice": voice,
-        "input": text,
-        "response_format": response_format,
+        "input": {
+            "text": text,
+            "voice": voice,
+            "format": response_format,
+            "sample_rate": 24000,
+        },
     }
 
-    async def _call():
+    async def _call() -> dict[str, Any]:
         client = _get_client(settings)
-        resp = await client.post("/audio/speech", headers=headers, json=payload)
-        resp.raise_for_status()
-        return await resp.aread()
+        resp = await client.post(
+            _absolute_provider_url(settings, TTS_ENDPOINT), headers=headers, json=payload
+        )
+        if resp.status_code >= 400:
+            await resp.aread()
+            log.error("DashScope TTS HTTP %s model=%s", resp.status_code, model)
+            raise httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+        data = resp.json()
+        try:
+            audio = data["output"]["audio"]
+        except (KeyError, TypeError) as exc:
+            raise ValueError("TTS response missing output.audio") from exc
+        if not isinstance(audio, dict):
+            raise ValueError("TTS response output.audio must be an object")
+        return audio
 
-    return await _run_with_retry(_call, settings, description=f"tts len={len(text)}")
+    audio = await _run_with_retry(
+        _call, settings, description=f"tts request len={len(text)} model={model}"
+    )
+
+    inline_data = audio.get("data")
+    if inline_data:
+        return _decode_tts_audio_data(inline_data)
+
+    audio_url = _validate_tts_audio_url(audio.get("url"))
+
+    async def _download() -> bytes:
+        client = _get_client(settings)
+        resp = await client.get(audio_url)
+        resp.raise_for_status()
+        raw = await resp.aread()
+        if not raw:
+            raise ValueError("TTS audio URL returned an empty body")
+        return raw
+
+    return await _run_with_retry(
+        _download, settings, description=f"tts download model={model}"
+    )
 
 
 # =========================================================

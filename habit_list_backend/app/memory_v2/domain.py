@@ -39,10 +39,15 @@ class SourceType(StrEnum):
     USER_EXPLICIT = "user_explicit"
     SYSTEM_INFERRED = "system_inferred"
     USER_CONFIRMED = "user_confirmed"
+    # Produced by the formation layer from a cluster of already-grounded
+    # evidence.  This is the only source type that expresses something the user
+    # never said in one place, which is why it always starts as a proposal.
+    FORMATION = "formation"
 
 
 class UserStatus(StrEnum):
     PROPOSED = "proposed"
+    DEFERRED = "deferred"
     CONFIRMED = "confirmed"
     CORRECTED = "corrected"
     REJECTED = "rejected"
@@ -132,9 +137,56 @@ class RetrievalBatch(BaseModel):
     used_in_response: bool = False
 
 
+class TerrainKind(StrEnum):
+    """The five terrain expressions allowed by product baseline 4.1."""
+
+    GROWING = "growing"  # 正在长出来
+    RECURRING = "recurring"  # 反复回到
+    LOOSENING = "loosening"  # 正在松动
+    TWO_FORCES = "two_forces"  # 两股力量
+    UNNAMED = "unnamed"  # 尚未命名
+
+
+class EvidenceLabel(BaseModel):
+    """A role the model assigns to one already-grounded piece of evidence.
+
+    The model is shown opaque ordinal refs (``E1``, ``E2``…), never event ids,
+    text offsets, or excerpt content it could echo back.  It may only label
+    evidence that an earlier stage located verbatim in the user's own wording.
+    A ref outside the supplied set fails validation, so the formation layer
+    cannot invent a citation even if the model tries.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(pattern=r"^E\d{1,2}$")
+    role: EvidenceRole
+
+
+class FormationHypothesis(BaseModel):
+    """A cross-event hypothesis about what is forming in someone."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    terrain_kind: TerrainKind
+    claim_text: str = Field(min_length=4, max_length=200)
+    why_now: str = Field(min_length=4, max_length=200)
+    evidence_roles: list[EvidenceLabel] = Field(min_length=1, max_length=64)
+
+    @field_validator("claim_text", "why_now")
+    @classmethod
+    def _single_line(cls, value: str) -> str:
+        return " ".join(value.replace("\x00", " ").split())
+
+    def refs_for(self, role: EvidenceRole) -> list[str]:
+        return [label.ref for label in self.evidence_roles if label.role == role]
+
+
 __all__ = [
     "ClaimType",
+    "EvidenceLabel",
     "EvidenceRole",
+    "FormationHypothesis",
     "MemoryAtom",
     "MemoryCategory",
     "MemoryExtraction",
@@ -144,5 +196,6 @@ __all__ = [
     "RetrievalRoute",
     "Sensitivity",
     "SourceType",
+    "TerrainKind",
     "UserStatus",
 ]

@@ -16,6 +16,7 @@ services:
     volumes:
       - ${STAGING_NGINX_TEMPLATE:-./deploy/nginx.staging.conf}:/etc/nginx/templates/default.conf.template:ro
       - ./web/app.html:/usr/share/nginx/html/index.html:ro
+      - ./web/design:/usr/share/nginx/html/design:ro
       - ./deploy/staging.htpasswd:/etc/nginx/auth/staging.htpasswd:ro
     entrypoint:
       - /bin/sh

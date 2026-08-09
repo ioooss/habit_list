@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
 
@@ -11,24 +11,40 @@ from ..core.config import Settings, get_settings
 from ..db.database import get_db
 from ..db.memory_models import MemoryClaim, MemoryEmbedding, OutboxEvent, UserEvent
 from ..db.models import _utcnow_iso
+from ..moments.service import (
+    MOMENT_ECHO_REVISIT_REQUESTED,
+    MOMENT_RESPONSE_REQUESTED,
+    process_moment_echo_revisit,
+    process_moment_response,
+)
 from ..providers import dashscope
 from .extractor import extract_memory_atoms
+from .formation import FORMATION_SCAN_REQUESTED, run_formation_scan
 from .reconcile import EMBEDDING_REQUESTED, reconcile_event
-from .service import EXTRACTION_REQUESTED
+from .service import EXTRACTION_REQUESTED, enqueue_formation_scan
 
 log = logging.getLogger("habit_list.memory_v2.worker")
+
+_MEMORY_EVENT_TYPES = [
+    EXTRACTION_REQUESTED,
+    EMBEDDING_REQUESTED,
+    FORMATION_SCAN_REQUESTED,
+]
 
 
 def _iso_after(seconds: int) -> str:
     return (
-        datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        datetime.now(UTC) + timedelta(seconds=seconds)
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-async def _claim_batch(limit: int) -> list[str]:
+async def _claim_batch(limit: int, *, include_memory_events: bool) -> list[str]:
     now = _utcnow_iso()
+    event_types = [MOMENT_RESPONSE_REQUESTED, MOMENT_ECHO_REVISIT_REQUESTED]
+    if include_memory_events:
+        event_types.extend(_MEMORY_EVENT_TYPES)
     stale_lock = (
-        datetime.now(timezone.utc) - timedelta(minutes=10)
+        datetime.now(UTC) - timedelta(minutes=10)
     ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     async with get_db(read_only=False) as db:
         events = list(
@@ -36,7 +52,7 @@ async def _claim_batch(limit: int) -> list[str]:
                 await db.execute(
                     select(OutboxEvent)
                     .where(
-                        OutboxEvent.event_type.in_([EXTRACTION_REQUESTED, EMBEDDING_REQUESTED]),
+                        OutboxEvent.event_type.in_(event_types),
                         OutboxEvent.available_at <= now,
                         or_(
                             OutboxEvent.status == "pending",
@@ -73,6 +89,11 @@ async def _mark_processed(outbox_id: str) -> None:
         ).scalar_one_or_none()
         if event is None:
             return
+        # Deletion, permission revocation, or a disabled Memory V2 mode may
+        # cancel a task while a worker is still holding an older copy.  A
+        # completed worker must never resurrect that task as ``processed``.
+        if event.status not in {"pending", "processing"}:
+            return
         event.status = "processed"
         event.processed_at = _utcnow_iso()
         event.locked_at = None
@@ -85,6 +106,10 @@ async def _mark_failed(outbox_id: str, exc: Exception, settings: Settings) -> No
             await db.execute(select(OutboxEvent).where(OutboxEvent.outbox_id == outbox_id))
         ).scalar_one_or_none()
         if event is None:
+            return
+        if event.status not in {"pending", "processing"}:
+            # A cancellation/deletion committed while the provider call was
+            # running wins over retry bookkeeping as well as success bookkeeping.
             return
         attempts = int(event.attempts or 1)
         event.status = "dead" if attempts >= settings.memory_v2_outbox_max_attempts else "pending"
@@ -138,18 +163,63 @@ async def _process_extraction(outbox: OutboxEvent, settings: Settings) -> None:
         ).scalar_one_or_none()
         if current_outbox is None:
             return
+        if current_outbox.status != "processing":
+            # The source may have been deleted while the provider call was in
+            # flight.  Preserve the cancellation marker and skip reconciliation.
+            return
         if source is not None:
-            await reconcile_event(
+            result = await reconcile_event(
                 db,
                 event=source,
                 extraction=extraction,
                 request_id=request_id,
                 settings=settings,
             )
+            if source.terrain_eligible and (
+                result.created_claim_ids or result.updated_claim_ids
+            ):
+                # New terrain-eligible evidence landed, so a formation pass is
+                # worth running.  It is deferred and coalesced deliberately: a
+                # forming feature must not arrive in the same breath as the
+                # message that completed it.
+                await enqueue_formation_scan(
+                    db, user_id=str(outbox.user_id), settings=settings
+                )
         current_outbox.status = "processed"
         current_outbox.processed_at = _utcnow_iso()
         current_outbox.locked_at = None
         current_outbox.last_error = None
+
+
+async def _process_formation(outbox: OutboxEvent, settings: Settings) -> None:
+    """Run one formation scan and materialize its fade bookkeeping."""
+
+    if not settings.memory_v3_formation_enabled:
+        await _mark_processed(outbox.outbox_id)
+        return
+    user_id = str(outbox.user_id)
+    result = await run_formation_scan(
+        user_id=user_id,
+        request_id=outbox.outbox_id,
+        settings=settings,
+    )
+    touched = {*result.created_claim_ids, *result.strengthened_claim_ids}
+    if touched:
+        from ..api.v1.terrain import refresh_terrain_lifecycle
+
+        async with get_db(read_only=False) as db:
+            for claim_id in touched:
+                await refresh_terrain_lifecycle(db, user_id=user_id, claim_id=claim_id)
+    log.info(
+        "Formation scan considered=%d admitted=%d asked=%d created=%d strengthened=%d discarded=%d",
+        result.clusters_considered,
+        result.clusters_admitted,
+        result.hypotheses_requested,
+        len(result.created_claim_ids),
+        len(result.strengthened_claim_ids),
+        result.hypotheses_discarded,
+    )
+    await _mark_processed(outbox.outbox_id)
 
 
 async def _process_embedding(outbox: OutboxEvent, settings: Settings) -> None:
@@ -193,7 +263,24 @@ async def _process_embedding(outbox: OutboxEvent, settings: Settings) -> None:
                 select(OutboxEvent).where(OutboxEvent.outbox_id == outbox.outbox_id)
             )
         ).scalar_one_or_none()
-        if current_outbox is None:
+        if current_outbox is None or current_outbox.status != "processing":
+            # Do not write a vector after a claim/source deletion cancelled the
+            # task while the embedding provider was running.
+            return
+        current_claim = (
+            await db.execute(
+                select(MemoryClaim).where(
+                    MemoryClaim.claim_id == claim_id,
+                    MemoryClaim.user_id == outbox.user_id,
+                    MemoryClaim.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if current_claim is None:
+            current_outbox.status = "processed"
+            current_outbox.processed_at = _utcnow_iso()
+            current_outbox.locked_at = None
+            current_outbox.last_error = "claim_deleted"
             return
         existing = (
             await db.execute(
@@ -240,8 +327,11 @@ async def process_pending_outbox(settings: Settings | None = None) -> dict[str, 
     settings = settings or get_settings()
     counters = {"claimed": 0, "processed": 0, "retried": 0, "dead": 0}
     if settings.memory_v2_mode == "off":
-        return counters
-    outbox_ids = await _claim_batch(settings.memory_v2_outbox_batch_size)
+        await _cancel_disabled_memory_events()
+    outbox_ids = await _claim_batch(
+        settings.memory_v2_outbox_batch_size,
+        include_memory_events=settings.memory_v2_mode != "off",
+    )
     counters["claimed"] = len(outbox_ids)
     for outbox_id in outbox_ids:
         outbox = await _load_outbox(outbox_id)
@@ -252,6 +342,14 @@ async def process_pending_outbox(settings: Settings | None = None) -> dict[str, 
                 await _process_extraction(outbox, settings)
             elif outbox.event_type == EMBEDDING_REQUESTED:
                 await _process_embedding(outbox, settings)
+            elif outbox.event_type == FORMATION_SCAN_REQUESTED:
+                await _process_formation(outbox, settings)
+            elif outbox.event_type == MOMENT_RESPONSE_REQUESTED:
+                await process_moment_response(outbox, settings)
+                await _mark_processed(outbox_id)
+            elif outbox.event_type == MOMENT_ECHO_REVISIT_REQUESTED:
+                await process_moment_echo_revisit(outbox, settings)
+                await _mark_processed(outbox_id)
             else:  # Defensive; selector currently excludes other event types.
                 await _mark_processed(outbox_id)
             counters["processed"] += 1
@@ -263,6 +361,34 @@ async def process_pending_outbox(settings: Settings | None = None) -> dict[str, 
             else:
                 counters["retried"] += 1
     return counters
+
+
+async def _cancel_disabled_memory_events() -> int:
+    """Close old Memory V2 work when the feature is explicitly disabled.
+
+    The moment response/revisit queues are deliberately left alone: they are
+    product behavior and must continue to drain with Memory V2 off.  Extraction,
+    embedding and formation requests, however, have no consumer in that mode, so
+    leaving them pending would surface a permanent processing state and retain
+    stale work indefinitely.
+    """
+
+    async with get_db(read_only=False) as db:
+        events = list(
+            (
+                await db.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type.in_(_MEMORY_EVENT_TYPES),
+                        OutboxEvent.status.in_(["pending", "processing"]),
+                    )
+                )
+            ).scalars().all()
+        )
+        for event in events:
+            event.status = "cancelled"
+            event.locked_at = None
+            event.last_error = "memory_v2_disabled"
+        return len(events)
 
 
 __all__ = ["process_pending_outbox"]

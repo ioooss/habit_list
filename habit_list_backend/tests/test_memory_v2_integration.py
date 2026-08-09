@@ -31,6 +31,7 @@ async def _remember(
     request_id: str,
     settings: Settings,
     mode: str = "confide",
+    terrain_eligible: bool = False,
 ) -> str:
     async with get_db(read_only=False) as db:
         enqueued = await enqueue_user_event(
@@ -40,6 +41,7 @@ async def _remember(
             request_id=request_id,
             content=text,
             mode=mode,
+            terrain_eligible=terrain_eligible,
             settings=settings,
         )
     assert enqueued is not None
@@ -246,3 +248,47 @@ async def test_memory_api_explains_corrects_and_permanently_deletes(
             )
         )
     assert resurrected == 0
+
+
+async def test_rejected_memory_is_not_recreated_and_profile_shows_correction(
+    client: AsyncClient,
+    test_settings: Settings,
+):
+    await _remember(
+        text="我喜欢蓝莓。",
+        request_id="reject-blueberry-first",
+        settings=test_settings,
+    )
+    listed = await client.get("/api/v1/memories", params={"q": "蓝莓"})
+    assert listed.status_code == 200, listed.text
+    claim_id = listed.json()["items"][0]["claim_id"]
+
+    rejected = await client.post(f"/api/v1/memories/{claim_id}/reject")
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["user_status"] == "rejected"
+
+    profile = await client.get("/api/v1/me/profile")
+    assert profile.status_code == 200, profile.text
+    assert profile.json()["feedback"]["rejected_memory_count"] == 1
+
+    # A later event with the same grounded interpretation must not create a
+    # fresh Claim after the user has explicitly rejected it.
+    await _remember(
+        text="我喜欢蓝莓。",
+        request_id="reject-blueberry-replay",
+        settings=test_settings,
+    )
+    async with get_db(read_only=True) as db:
+        claims = list(
+            (
+                await db.execute(
+                    select(MemoryClaim).where(
+                        MemoryClaim.user_id == test_settings.default_user_id,
+                        MemoryClaim.deleted_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+        )
+    assert len(claims) == 1
+    assert claims[0].claim_id == claim_id
+    assert claims[0].user_status == "rejected"

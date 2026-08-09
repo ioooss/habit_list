@@ -4,8 +4,8 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 import jieba
 import numpy as np
@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import Settings, get_settings
-from ..db.memory_models import MemoryClaim, MemoryEmbedding
+from ..db.memory_models import MemoryClaim, MemoryEmbedding, MemoryEvidence, UserEvent
 from .domain import RetrievalBatch, RetrievalCandidate, RetrievalRoute, UserStatus
 
 _TEMPORAL_RE = re.compile(r"之前|以前|上次|最近|这段时间|过去|后来|当时|什么时候|变了|变化")
@@ -53,7 +53,7 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -62,7 +62,7 @@ def _recency(value: str | None, *, half_life_days: float = 90.0) -> float:
     parsed = _parse_iso(value)
     if parsed is None:
         return 0.25
-    days = max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+    days = max(0.0, (datetime.now(UTC) - parsed).total_seconds() / 86400.0)
     return float(math.exp(-math.log(2.0) * days / half_life_days))
 
 
@@ -73,7 +73,7 @@ def _activation(claim: MemoryClaim) -> float:
     parsed = _parse_iso(anchor)
     if parsed is None:
         return 0.2
-    days = max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds() / 86400.0)
+    days = max(0.0, (datetime.now(UTC) - parsed).total_seconds() / 86400.0)
     # Power-law activation; computed from absolute time and never compounded.
     return float(min(1.0, (days + 1.0) ** -0.35))
 
@@ -137,7 +137,7 @@ async def retrieve_memories(
     if route in {RetrievalRoute.NONE, RetrievalRoute.WORKING_ONLY}:
         return empty
 
-    now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now_iso = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     claims = list(
         (
             await session.execute(
@@ -155,6 +155,27 @@ async def retrieve_memories(
         ).scalars().all()
     )
     claims = [claim for claim in claims if _valid_now(claim, now_iso)]
+    if not claims:
+        return empty
+
+    # A claim is only as alive as at least one active source event.  Checking
+    # this at read time closes the race where deletion/revocation happens after
+    # reconciliation but before the next chat retrieves the claim.
+    active_claim_ids = set(
+        (
+            await session.execute(
+                select(MemoryEvidence.claim_id)
+                .join(UserEvent, UserEvent.event_id == MemoryEvidence.event_id)
+                .where(
+                    MemoryEvidence.claim_id.in_([claim.claim_id for claim in claims]),
+                    UserEvent.user_id == user_id,
+                    UserEvent.status == "active",
+                )
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    claims = [claim for claim in claims if claim.claim_id in active_claim_ids]
     if not claims:
         return empty
 

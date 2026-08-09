@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 
 # ---------- DashScope mock helpers（从 tests 包 re-export，供测试用例直接调用）----------
 def _json_str(s: str) -> str:
@@ -57,39 +55,59 @@ def mock_dashscope_embeddings(respx_mock, settings, dim=None, n=1):
         200, json={"object": "list", "data": data, "model": settings.dashscope_embedding_model},
     )
 
-
 def mock_dashscope_asr(respx_mock, settings, text="今天下午3点提醒我交周报"):
+    import httpx
+
     from app.core.config import Settings
+
     assert isinstance(settings, Settings)
-    respx_mock.post(f"{settings.dashscope_base_url}/audio/transcriptions").respond(
-        200, json={"text": text}
+    base = httpx.URL(settings.dashscope_base_url)
+    root = str(base.copy_with(path="", query=None, fragment=None)).rstrip("/")
+    respx_mock.post(f"{root}/api/v1/services/aigc/multimodal-generation/generation").respond(
+        200,
+        json={
+            "request_id": "asr-submit-test-1",
+            "output": {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"text": text}],
+                        }
+                    }
+                ]
+            },
+        },
     )
 
 
 def mock_dashscope_tts(respx_mock, settings, payload=b"RIFF----WAVEfmt fake"):
+    import base64
+
+    import httpx
+
     from app.core.config import Settings
+
     assert isinstance(settings, Settings)
-    respx_mock.post(f"{settings.dashscope_base_url}/audio/speech").respond(
-        200, content=payload, headers={"Content-Type": "audio/wav"}
+    endpoint = str(
+        httpx.URL(settings.dashscope_base_url).copy_with(
+            path="/api/v1/services/audio/tts/SpeechSynthesizer", query=None, fragment=None
+        )
     )
-
-
-@pytest.fixture(autouse=True)
-def _clear_singletons_between_tests():
-    """每个用例后清空 httpx client / APScheduler / sqlite engine / 知识图谱 单例，避免串数据。"""
-    yield
-    from app.db import database as db_mod
-    from app.memory import system2 as system2_mod
-    from app.providers import dashscope as dashscope_provider
-    from app.retrieval import graph as graph_mod
-
-    db_mod._engines.clear()
-    db_mod._sessionmakers.clear()
-    dashscope_provider._clients.clear()
-    system2_mod._scheduler = None
-    graph_mod._GRAPHS_BY_USER.clear()
-    graph_mod._NODE_NORM_NAMES_BY_USER.clear()
-    graph_mod._GRAPH_VERSION += 1
-    # 清 settings 缓存，确保下次取的是最新
-    from app.core.config import get_settings
-    get_settings.cache_clear()
+    respx_mock.post(
+        endpoint
+    ).respond(
+        200,
+        json={
+            "request_id": "tts-req-test-1",
+            "output": {
+                "finish_reason": "stop",
+                "audio": {
+                    "data": base64.b64encode(payload).decode("ascii"),
+                    "url": "",
+                    "id": "audio_test",
+                },
+            },
+            "usage": {"characters": 1},
+        },
+    )

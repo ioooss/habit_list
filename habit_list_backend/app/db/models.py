@@ -8,7 +8,7 @@ import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import JSON, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Float, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -121,6 +121,83 @@ class Episodic(Base):
     )
 
 
+class MediaAsset(Base):
+    """A user-owned original image/audio file stored outside the database.
+
+    The database keeps ownership, permissions, and deletion state.  The file
+    itself lives below ``Settings.media_root_path`` and is addressed only by
+    the generated asset id, never by a user-provided path.
+    """
+
+    __tablename__ = "media_assets"
+
+    asset_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid7()))
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.user_id", ondelete="CASCADE"), index=True
+    )
+    asset_kind: Mapped[str] = mapped_column(String(16), index=True)  # image / audio / video
+    mime_type: Mapped[str] = mapped_column(String(128))
+    original_name: Mapped[str] = mapped_column(String(255), default="upload.bin")
+    storage_path: Mapped[str] = mapped_column(Text)
+    byte_size: Mapped[int] = mapped_column(default=0)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # How much the ASR provider vouched for ``transcript``.  ``None`` means the
+    # provider reported nothing, which is not the same as a low score and must
+    # not be read as one: it means the transcript is an unverified guess.
+    transcript_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # A Live Photo is represented by two original assets (still + motion) that
+    # share a group id.  The relationship is explicit so deletion, audit and
+    # object-storage migration do not depend on parsing filenames.
+    media_group_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    media_role: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    owner_type: Mapped[str] = mapped_column(String(16), default="unattached", index=True)
+    owner_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=_JSON_DEFAULT_DICT)
+    created_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso, index=True)
+    deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (
+        Index("idx_media_user_owner", "user_id", "owner_type", "owner_id"),
+        Index("idx_media_user_status_time", "user_id", "status", "created_at"),
+    )
+
+
+class MomentInteraction(Base):
+    """A user-visible interaction attached to one explicit life fragment.
+
+    These rows form a fragment-scoped thread.  They are deliberately separate
+    from Working/Episodic memory so replying to a fragment cannot silently
+    create a task, terrain evidence, or another remembered life event.
+    """
+
+    __tablename__ = "moment_interactions"
+
+    interaction_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid7())
+    )
+    moment_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("episodic.episodic_id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.user_id", ondelete="CASCADE"), index=True
+    )
+    actor: Mapped[str] = mapped_column(String(16), index=True)  # user / assistant
+    kind: Mapped[str] = mapped_column(String(24), default="comment", index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    reaction: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=_JSON_DEFAULT_DICT)
+    created_at: Mapped[str] = mapped_column(String(32), default=_utcnow_iso, index=True)
+
+    __table_args__ = (
+        Index("idx_moment_interaction_thread", "moment_id", "created_at", "interaction_id"),
+        Index("idx_moment_interaction_user_time", "user_id", "created_at", "interaction_id"),
+    )
+
+
 class Semantic(Base):
     """第3层 语义事实（画像 + 确认过的洞察）。"""
     __tablename__ = "semantic"
@@ -173,7 +250,7 @@ class Memo(Base):
     due_iso: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     due_offset_days: Mapped[int] = mapped_column(default=99, index=True)
     importance: Mapped[str] = mapped_column(String(8), default="green", index=True)  # red/yellow/green
-    source: Mapped[str] = mapped_column(String(32), default="companion_auto")  # companion_auto / memo_page_manual
+    source: Mapped[str] = mapped_column(String(32), default="memo_page_manual")  # companion_explicit / memo_page_manual / legacy companion_auto
     status: Mapped[str] = mapped_column(String(24), default="pending", index=True)  # pending/done/overdue_stale/archived
     notified_ios_ids_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     status_changed_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

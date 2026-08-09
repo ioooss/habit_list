@@ -121,7 +121,7 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 async def list_memories(
     user_id: str = Depends(current_user),
     status_filter: Annotated[
-        Literal["current", "usable", "proposed", "hidden", "rejected", "all"],
+        Literal["current", "usable", "proposed", "deferred", "hidden", "rejected", "all"],
         Query(alias="status"),
     ] = "current",
     category: MemoryCategory | None = None,
@@ -136,7 +136,7 @@ async def list_memories(
         )
         if status_filter == "current":
             stmt = stmt.where(
-                MemoryClaim.user_status.in_(["proposed", "confirmed", "corrected"])
+                MemoryClaim.user_status.in_(["proposed", "deferred", "confirmed", "corrected"])
             )
         elif status_filter == "usable":
             stmt = stmt.where(MemoryClaim.user_status.in_(["confirmed", "corrected"]))
@@ -283,6 +283,15 @@ async def reject_memory(
     req_id: str = Depends(request_id),
 ):
     return await _transition(claim_id, "reject", user_id, req_id)
+
+
+@router.post("/{claim_id}/defer", response_model=MemoryOut)
+async def defer_memory(
+    claim_id: str,
+    user_id: str = Depends(current_user),
+    req_id: str = Depends(request_id),
+):
+    return await _transition(claim_id, "defer", user_id, req_id)
 
 
 @router.post("/{claim_id}/hide", response_model=MemoryOut)

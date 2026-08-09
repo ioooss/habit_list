@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     sqlite_vss_ext_path: Optional[str] = None
     fts5_tokenizer: str = "unicode61"
 
+    # ---- 本地媒体 ----
+    # 预览阶段落在项目 F 盘的数据目录；生产阶段可替换为对象存储适配器。
+    media_root: str = "./data/media"
+    media_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    media_max_image_bytes: int = Field(default=12 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    media_max_audio_seconds: int = Field(default=600, ge=5, le=3600)
+    # A picker upload is initially unattached. Abandoned uploads must not
+    # accumulate forever when the user closes the composer before saving.
+    media_unattached_retention_minutes: int = Field(default=60, ge=5, le=7 * 24 * 60)
+
     # ---- DashScope ----
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_api_key: str = ""
@@ -74,7 +84,9 @@ class Settings(BaseSettings):
     # 默认随 dashscope_embedding_model 的默认维度；qwen3.7-text-embedding=1024, text-embedding-v3=1536
     dashscope_embedding_dim: int = 1024
     dashscope_asr_model: str = "paraformer-v2"
-    dashscope_tts_model: str = "cosyvoice-v1"
+    # 本地媒体以 bytes 进入 API，使用内联 Qwen ASR，避免把私密语音上传到公共对象地址。
+    dashscope_asr_inline_model: str = "qwen3-asr-flash"
+    dashscope_tts_model: str = "qwen-audio-3.0-tts-flash"
     dashscope_moderation_model: str = "qwen-moderation-plus"
     dashscope_timeout_sec: int = 120
     dashscope_max_retry: int = 2
@@ -89,13 +101,17 @@ class Settings(BaseSettings):
     system2_insight_conf_min: float = 0.6
     forget_strength: float = 0.86
 
-    # ---- Memory V2（默认影子写入，不影响当前回复）----
+    # ---- Memory V2（正式启用：记忆可被召回并进入回复）----
+    # active 是产品形态，不是实验开关：记忆是本产品的核心差异点，影子模式下
+    # 用户永远看不到"它记得我"。降级路径仍然完整（shadow_* / off 可回退）。
     memory_v2_mode: str = Field(
-        default="shadow_write",
+        default="active",
         pattern=r"^(off|shadow_write|shadow_retrieve|active)$",
     )
+    # hybrid：LLM 抽取 + 规则兜底。规则单独无法抽出"反复回到"这类需要语义的
+    # 原子；LLM 失败或没有 API key 时自动退回纯规则，不会中断写入链路。
     memory_v2_extractor_mode: str = Field(
-        default="rules",
+        default="hybrid",
         pattern=r"^(rules|hybrid|llm)$",
     )
     memory_v2_policy_version: str = "terrain-memory-v1"
@@ -107,7 +123,30 @@ class Settings(BaseSettings):
     memory_v2_worker_interval_seconds: int = Field(default=15, ge=5, le=3600)
     memory_v2_outbox_batch_size: int = Field(default=20, ge=1, le=200)
     memory_v2_outbox_max_attempts: int = Field(default=5, ge=1, le=20)
-    memory_v2_embedding_enabled: bool = False
+    # 形成层的语义聚类依赖向量：关掉 embedding 时，聚类退化为"同一 slot_key
+    # 单独成簇"，只能形成 recurring 一种地形。
+    memory_v2_embedding_enabled: bool = True
+
+    # ---- Memory V3 形成层 ----
+    # 门槛只能调高，不能调低：产品基线 11.1 要求安全下限不可由运营配置降低。
+    memory_v3_formation_enabled: bool = True
+    memory_v3_min_evidence: int = Field(default=3, ge=3, le=20)
+    memory_v3_min_span_days: int = Field(default=7, ge=7, le=365)
+    memory_v3_min_contexts: int = Field(default=2, ge=2, le=20)
+    memory_v3_max_hypotheses_per_scan: int = Field(default=2, ge=1, le=5)
+    memory_v3_cluster_similarity: float = Field(default=0.62, ge=0.30, le=0.99)
+    memory_v3_scan_debounce_seconds: int = Field(default=21600, ge=60, le=604800)
+    memory_v3_policy_version: str = "terrain-formation-v1"
+    # 低于该置信度的语音转写不得成为地形证据（基线 8.3）。
+    memory_v3_min_asr_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+    # 危机会话窗口：命中危机后，同会话内这段时间的内容全部隔离在形成层之外。
+    memory_v3_crisis_window_minutes: int = Field(default=180, ge=10, le=1440)
+
+    # ---- 此刻天气 ----
+    # 天气是会话级的短期状态，不是可累积的序列（基线 §11 限制长期化）。
+    # 超过这个窗口就当作已经散掉，地形页的天气槽位重新变空。
+    terrain_weather_enabled: bool = True
+    terrain_weather_ttl_hours: int = Field(default=12, ge=1, le=72)
 
     # ---- Worker 运行时 ----
     worker_heartbeat_path: str = "./data/worker-heartbeat.json"
@@ -272,6 +311,14 @@ class Settings(BaseSettings):
         raw = m.group(1)
         p = Path(raw)
         return str(p.resolve()) if not p.is_absolute() else str(p)
+
+    @property
+    def media_root_path(self) -> Path:
+        """Resolve local media storage relative to the backend project root."""
+        path = Path(self.media_root)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / path
+        return path.resolve()
 
 
 @lru_cache(maxsize=1)

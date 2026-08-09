@@ -29,6 +29,7 @@ from ..db.models import (
     Insight,
     RawLedger,
     Semantic,
+    User,
 )
 from ..providers import dashscope
 from ..retrieval import graph as graph_retrieval
@@ -174,6 +175,11 @@ async def consolidate_weekly(settings: Settings | None = None, user_id_override:
     async with get_db(read_only=False) as db:
         # 单用户 MVP，直接 settings.default_user_id；后面多租户改 user_id_override
         user_id = user_id_override or settings.default_user_id
+        # 用户暂停了记忆形成：本周不做任何自动沉淀
+        user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
+        if user is not None and (user.settings_json or {}).get("memory_paused"):
+            log.info("consolidate skipped: memory_paused user=%s", user_id)
+            return res
         start_iso, end_iso = _past_window_iso(days=7)
         episodes = await _fetch_window_episodic(db, user_id, start_iso, end_iso)
         if not episodes:
