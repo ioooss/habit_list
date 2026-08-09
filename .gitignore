@@ -9,6 +9,9 @@
 Thumbs.db
 .idea/
 .vscode/
+.claude/
+.qoder/
+.playwright-cli/
 *.swp
 *.swo
 node_modules/
@@ -31,3 +34,5 @@ tmp/
 temp/
 *.log
 screenshots/
+design/_tmp/
+output/
