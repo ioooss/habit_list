@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1024"
+     height="1024"
+     viewBox="0 0 1024 1024"
+     role="img"
+     aria-labelledby="title description"
+     shape-rendering="geometricPrecision">
+  <title id="title">内在地形头像</title>
+  <desc id="description">深墨蓝背景上，四层偏心的象牙色等高线环绕一颗暖橙色记忆石。</desc>
+
+  <defs>
+    <radialGradient id="background" cx="50%" cy="43%" r="76%">
+      <stop offset="0" stop-color="#2A3B43"/>
+      <stop offset="0.55" stop-color="#14242C"/>
+      <stop offset="1" stop-color="#081117"/>
+    </radialGradient>
+
+    <linearGradient id="contour" x1="170" y1="180" x2="820" y2="850" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF4E3"/>
+      <stop offset="0.58" stop-color="#E8E0D3"/>
+      <stop offset="1" stop-color="#AEBFC0"/>
+    </linearGradient>
+
+    <filter id="soft-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="30"/>
+    </filter>
+  </defs>
+
+  <!-- Full-bleed background remains safe when WeChat applies a circular crop. -->
+  <rect width="1024" height="1024" fill="url(#background)"/>
+
+  <!-- A restrained amber atmosphere marks the remembered center. -->
+  <ellipse cx="620" cy="358" rx="142" ry="132" fill="#F0A45A" opacity="0.13" filter="url(#soft-glow)"/>
+
+  <!-- Four cognitive layers: deliberately irregular and off-centre like real terrain. -->
+  <g fill="none"
+     stroke="url(#contour)"
+     stroke-linecap="round"
+     stroke-linejoin="round">
+    <path d="M507 144
+             C665 129 830 246 861 399
+             C891 551 808 726 660 817
+             C508 910 306 856 209 716
+             C111 574 158 359 293 246
+             C354 194 426 151 507 144Z"
+          stroke-width="25"
+          opacity="0.38"/>
+
+    <path d="M477 246
+             C596 223 724 310 747 423
+             C770 539 711 657 602 722
+             C491 789 348 748 282 646
+             C215 542 251 395 344 318
+             C384 285 426 255 477 246Z"
+          stroke-width="25"
+          opacity="0.56"/>
+
+    <path d="M441 345
+             C526 324 619 378 636 458
+             C653 539 614 618 538 661
+             C462 705 363 678 318 609
+             C274 541 298 445 359 395
+             C384 374 411 352 441 345Z"
+          stroke-width="25"
+          opacity="0.75"/>
+
+    <path d="M399 439
+             C449 423 505 452 515 499
+             C526 548 503 594 459 620
+             C415 646 359 630 333 591
+             C308 551 321 497 355 465
+             C368 453 383 444 399 439Z"
+          stroke-width="26"
+          opacity="0.96"/>
+  </g>
+
+  <!-- One remembered moment: a flat, organic pebble rather than a planet-like sphere. -->
+  <path d="M620 300
+           C658 294 692 323 685 365
+           C680 407 651 432 611 425
+           C570 419 548 388 558 350
+           C568 317 588 303 620 300Z"
+        fill="#F0A45A"/>
+</svg>

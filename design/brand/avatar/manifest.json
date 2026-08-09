@@ -1,0 +1,30 @@
+{
+  "brand": "内在地形",
+  "asset": "微信公众号头像",
+  "createdAt": "2026-08-01",
+  "source": {
+    "file": "inner-terrain-avatar.svg",
+    "format": "image/svg+xml",
+    "viewBox": "0 0 1024 1024",
+    "sha256": "3a74235b81e809aaba230bd202dd1b17b4598014fb12a55952a71bdbfbd24ffe"
+  },
+  "exports": [
+    {
+      "file": "inner-terrain-avatar-1024.png",
+      "format": "image/png",
+      "width": 1024,
+      "height": 1024,
+      "purpose": "微信公众号上传",
+      "sha256": "ccd19eed32a25a9fd8ab1adbc80bd9ef11acdbd01b716b5577b613e26d7c0825"
+    },
+    {
+      "file": "inner-terrain-avatar-256.png",
+      "format": "image/png",
+      "width": 256,
+      "height": 256,
+      "purpose": "小尺寸检查与预览",
+      "sha256": "36aace03196a40e354ec5b168d8d8dc96bc5f838f663e476db9e3b672c405bdb"
+    }
+  ],
+  "provenance": "Original vector artwork created for the Inner Terrain product. No external visual assets were used."
+}
