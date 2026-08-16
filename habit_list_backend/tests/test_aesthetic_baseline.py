@@ -5966,6 +5966,28 @@ def test_the_glow_radius_is_a_ladder_not_a_knob():
     assert seen == ladder, (seen, ladder)
 
 
+def test_how_deep_the_light_reaches_is_a_ladder_not_a_knob():
+    """§6.1 判据十续：内光的 blur（透进多深）只许站在自己的梯子上。
+
+    第一档 16 坐着七层——两枚 44px 玻璃键的全部状态（rest / hover / recording /
+    recPulse 峰）共享同一个深度，状态只用亮度说话（alpha 0.03→0.10）；100 那一档
+    坐着呼吸的峰与聚焦态（并档前 100 与 120，比值 1.2）。深度是材料的，亮度是
+    状态的——判据八「厚度是材料的属性」在内光上的那句话。
+    """
+
+    ladder = _doc_ladder("内光深度的档")
+    seen: dict[float, int] = {}
+    bad = []
+    for ch, where, layer, g in _parsed_light():
+        y, blur = _px(g["y"]), _px(g["blur"])
+        if g["inset"] and y == 0 and blur > 0:
+            seen[blur] = seen.get(blur, 0) + 1
+            if blur not in ladder:
+                bad.append(f"{ch} @ {where}  {layer}")
+    assert seen and not bad, (bad or "一把只看内光的尺子今天一层都没读到")
+    assert seen == ladder, (seen, ladder)
+
+
 # --- §6.1 判据八：厚度是材料的属性，不是状态的读数 ---------------------------
 #
 # 这条判据的仪器不能建在「谁有厚度线」上，得建在「谁声明了 `box-shadow`」上。
