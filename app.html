@@ -5279,6 +5279,11 @@ async function submitUser(){
           if(curAiCard._sign) curAiCard._sign.textContent = '— 它';
         }
       }
+      // 语音进、语音出：这轮若是语音，回复落定后它自动开口念给你听。
+      // 降级时不出声——接不上的时候不假装在说话（声音基线 §3.2）。
+      if(audioAssetId && aiText && !degradedNotice){
+        speakAssistantText(aiText);
+      }
       // 降级说明跟在回复之后。危机与备忘确认在降级时仍然有字，说明也照旧出现——
       // 用户既拿到该拿到的东西，也知道陪伴者这会儿并没有在听。
       if(degradedNotice) pushDegraded(degradedNotice);
@@ -5374,7 +5379,7 @@ async function startChatVoice(){
         chatVoiceState.assetId=asset.asset_id;
         userInput.value=asset.transcript||'';
         autoResize();
-        toast(asset.transcript?'已转写，可编辑后发送':'这段我没听清。录音留着了，可以直接发送');
+        toast(asset.transcript?'已转写，可编辑后发送；它会用语音回你':'这段我没听清。录音留着了，可以直接发送');
       }catch(err){console.warn('[chat-voice] upload failed',err);toast('语音没有保存成功，请重试')}
       finally{chatVoiceState.busy=false;_setVoiceButtonLabel('录制语音')}
     };

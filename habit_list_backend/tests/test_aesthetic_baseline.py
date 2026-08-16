@@ -827,6 +827,19 @@ def test_the_playing_hook_is_gone_from_all_three_voice_views():
     assert ".pv-slide.playing" in CSS
 
 
+def test_voice_in_gets_voice_out_and_silence_when_it_cannot_speak():
+    """语音进、语音出（§3.2 的推论）：这轮带 audio_asset_id 的回复落定后自动朗读。
+
+    两句话钉死在收尾处：一是 `audioAssetId && aiText` 才开口——文字进来的轮次
+    不出声，朗读仍由手边的键决定；二是 `!degradedNotice`——接不上的那轮
+    不假装在说话。转写回填的提示也要把预期说出口（「它会用语音回你」），
+    不让这个默认行为成为用户猜不到的惊喜。
+    """
+    assert "if(audioAssetId && aiText && !degradedNotice){" in SCRIPT_NO_COMMENTS
+    assert "speakAssistantText(aiText);" in SCRIPT_NO_COMMENTS
+    assert "它会用语音回你" in SCRIPT_NO_COMMENTS
+
+
 # --- §7.4：一束光允许有色温，一个状态不允许有色相 ----------------------------
 
 # 共处页原先手写了 38 个暖色、90 处。收敛之后，这些值一个都不该回来。
