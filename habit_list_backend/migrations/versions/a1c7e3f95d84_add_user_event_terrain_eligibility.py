@@ -48,7 +48,7 @@ def upgrade() -> None:
     op.execute(
         """
         UPDATE user_events
-           SET terrain_eligible = 1
+           SET terrain_eligible = TRUE
          WHERE source = 'moment'
            AND mode = 'moment'
         """
