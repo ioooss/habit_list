@@ -10,8 +10,12 @@ token 都声明着，所以文件看起来是系统化的——但 24 个 token 
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import math
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,9 +53,51 @@ MARKUP_NO_COMMENTS = re.sub(
 )
 LIVE_SOURCE = CSS_NO_COMMENTS + SCRIPT_NO_COMMENTS + MARKUP_NO_COMMENTS
 
+# 「一个数长什么样」在这个文件里只许有这一份定义。CSS 与文档里同一个量有好几种
+# 合法拼法（`.04` / `0.04` / `0.040`），而 `\d\.\d+` 这类尺子只认得其中一种：认不出
+# 的那个声明是**悄悄**漏掉的，尺子仍然是绿的。这一份定义是给「要认出一个任意的数」
+# 的地方拼用的片段，不编译——编译出来的正则是另一类账（§7.23）。
+_NUM = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+
+# 只认写着小数点的数：光秃秃的整数在这个文件里常常是门牌号（`--o-1`、`200%`、`§7.15`），
+# 规范化它们会把名字改坏。所以「`1` 写成 `1.0`」这一种拼法这道尺子看不见（归 #117）。
+_QUANTITY = re.compile(r"(?<![\w.])[+-]?(?:\d+\.\d*|\.\d+)(?![\d.])")
+
+
+def _by_quantity(text: str) -> str:
+    """把一段文字里每一个数换成它唯一的规范拼法，比量而不比拼法。
+
+    `.04` / `0.04` / `0.040` 是同一个量的三种合法拼法，而 `==` 和 `in` 只认其中一种。
+    在**存在**型断言里认不出只是误报（大声地红）；在**不存在**型断言里认不出是
+    **漏报**——那条断言保持绿，而它守的那件事已经不成立了（§7.15）。
+    所以任何一条拿字面量去比一段文字的断言，两边都要先过这道规范化。
+    """
+
+    return _QUANTITY.sub(lambda m: repr(float(m.group(0))), text)
+
+
 # 一个时间值，写成 `.25s` / `250ms` / `1.4s` 都要认出来。
 # 曾经用 `(\d+(?:\.\d+)?)` 去匹配，`.25s` 被读成 25s，直方图整个是假的。
-TIME = re.compile(r"(?<![\w.])(\d*\.?\d+)(ms|s)(?![\w])")
+# 符号必须是时间值的一部分：`animation-delay` / `transition-delay` 允许负值
+# （`-1.5s` 表示立即开始、跳过前 1.5 秒），把 `-1.5s` 读成 `1.5s` 是把一个数读成
+# 另一个数（§7.15，与 `_NUM` 的 `[+-]?` 一致）。正号显式写（`+1.5s`）也合法。
+# 数字部分由 `_NUM` 拼出来（v1.40 判据（二）：「一个数长什么样」只许有一份定义）——
+# 顺带获得科学计数法（`1e-2s` 是合法 CSS 时间，`\d*\.?\d+` 读不到）。
+TIME = re.compile(r"(?<![\w.])(" + _NUM + r")(ms|s)(?![\w])")
+
+# 「认出一个东西」的尺子，每把只许有一份定义（§7.23：一个概念只有一把尺子）。
+# 这六把都曾在好几个测试里抄过第二遍——抄第二遍迟早只改一份，而另一份还在静默地
+# 读，两份抄本的行为一起变才算改对。定义成 compile 而不是字符串，因为收集器靠
+# 「re.* 调用 + 字面量参数」数这把尺子（§7.15 的元守卫），compile 是它的唯一定义处。
+# opacity 值域 [0,1]，`1e-2`（=0.01）是合法 CSS 数字、会真的渲染——它**不是**开关值，
+# 读不到它是一条漏报（与负值的越界不同）。科学计数法的写法：`[0-9]*\.?[0-9]+` 加
+# 可选的 `e±N`。不带符号：#115 判定负 opacity 是越界值（clamp 到 0），不认它。
+_OPACITY_VALUE = re.compile(r"(?<![-\w])opacity\s*:\s*([0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?)")
+_PLAIN_NUMBER = re.compile(r"[\d.]+")
+_O_TOKEN_REF = re.compile(r"var\((--o-\d+)\)")
+_DOC_BOLD_COUNT = re.compile(r"\*\*(\d+)\*\* 条")
+_DOC_BOLD_NUM = re.compile(r"\*\*(\d+)\*\*")
+_DOC_L_VALUE = re.compile(r"L=\*\*([\d.]+)\*\*")
 EASE_KEYWORD = re.compile(
     r"cubic-bezier\([^)]*\)"
     r"|(?<![-a-z])(?:ease-in-out|ease-out|ease-in|ease|linear|step-\w+)(?![-a-z])"
@@ -189,8 +235,9 @@ def test_recording_is_one_state_with_one_rhythm():
     # 两种几何，不是两个决定。
     assert "pulse-red" not in APP_HTML
     assert "voicePulse" not in APP_HTML
-    assert APP_HTML.count("animation:recRing 1.4s ease-in-out infinite") == 2
-    assert APP_HTML.count("animation:recPulse 1.4s ease-in-out infinite") == 1
+    app = _by_quantity(APP_HTML)
+    assert app.count(_by_quantity("animation:recRing 1.4s ease-in-out infinite")) == 2
+    assert app.count(_by_quantity("animation:recPulse 1.4s ease-in-out infinite")) == 1
 
 
 def test_the_degraded_notice_is_not_painted_as_an_error():
@@ -232,11 +279,24 @@ def test_only_one_easing_curve_exists():
     assert sorted(t for t in DECLARED if t.startswith("--ease-")) == ["--ease-silk"]
 
 
+def _beziers(src: str = APP_HTML) -> list[tuple[float, ...]]:
+    """全文每一条 cubic-bezier，读成它的四个量。
+
+    一条曲线的身份是四个控制点，不是它被写成什么样子：`cubic-bezier(.34,1.56,.64,1)`
+    与 `cubic-bezier(0.34,1.56,0.64,1.0)` 是同一条曲线。下面「回弹还是死的」那一条是
+    **不存在**型断言，按字形比的话改一位写法就能悄悄绕过去。
+    """
+
+    return [
+        tuple(float(n) for n in inside.split(","))
+        for inside in re.findall(r"cubic-bezier\(([^)]*)\)", src)
+    ]
+
+
 def test_no_hand_written_bezier_survives_outside_the_one_declaration():
-    beziers = re.findall(r"cubic-bezier\([^)]*\)", APP_HTML)
     # 只剩一条：token 自己的声明。曾经有 20 处 cubic-bezier(.2,.8,.2,1)，
     # 和 --ease-silk 肉眼无差。
-    assert sorted(beziers) == ["cubic-bezier(.22,.9,.3,1)"]
+    assert sorted(_beziers()) == [(0.22, 0.9, 0.3, 1.0)]
 
 
 def test_every_transition_names_silk():
@@ -248,7 +308,7 @@ def test_the_bounce_curve_stays_dead_until_something_is_lifted_out():
     # 回弹是一次表演，而定线是「说完就停」。一个会回弹的按钮在替用户表达兴奋。
     # 它回来的条件写在 §4.1：必须能指名一个「把实体从下面托起」的一次性动作，
     # 而且必须是唯一一处。做不到，就不该有第二条曲线。
-    assert "cubic-bezier(.34,1.56,.64,1)" not in APP_HTML
+    assert (0.34, 1.56, 0.64, 1.0) not in _beziers()
     assert "var(--ease-bounce)" not in APP_HTML
     # 当年 tab 切换上的两处回弹：切页不是把东西拿出来。
     assert "transform 200ms var(--ease-bounce)" not in APP_HTML
@@ -293,23 +353,81 @@ LIVE_INDICATORS = {
 # 这张名单是反向守卫，删掉动画时它会先红——这次就是它先红的。
 
 
+def test_time_reads_a_signed_duration():
+    """TIME 把时间值连同符号一起读出来：`-1.5s` 是 `animation-delay` 的合法写法。
+
+    符号不是拼法（`-1.5s` ≠ `1.5s`，是另一个量），所以 §7.15 的三种改写看不见它，
+    必须由这一条自己钉住。正号显式写也合法。
+    """
+
+    assert TIME.findall("animation: breathe 5s ease -1.5s") == [("5", "s"), ("-1.5", "s")]
+    assert TIME.findall("transition: all 1s ease-in-out -2s") == [("1", "s"), ("-2", "s")]
+    assert TIME.findall("animation: x 0.5s linear +0.25s") == [("0.5", "s"), ("+0.25", "s")]
+    # 数字部分由 `_NUM` 拼出来，所以科学计数法也认（`1e-2s` 是合法 CSS 时间值）。
+    assert TIME.findall("animation: x 1e-2s linear") == [("1e-2", "s")]
+
+
+def test_opacity_value_reads_scientific_notation():
+    """`opacity:1e-2` 是合法 CSS 数字（=0.01，不是开关值），必须读得到。
+
+    负值（越界，clamp 到 0）故意不认（v1.42），科学计数法（有效值）必须认——
+    读不到它是一条漏报：守卫会说「这条规则没有静态 opacity」，而 0.01 在 [0,1]
+    之间，不是开关。
+    """
+
+    assert _OPACITY_VALUE.search("opacity:1e-2").group(1) == "1e-2"
+    assert _OPACITY_VALUE.search("opacity:.5").group(1) == ".5"
+    assert _OPACITY_VALUE.search("opacity:0.35").group(1) == "0.35"
+    assert _OPACITY_VALUE.search("opacity:-.1") is None
+
+
+def test_no_unit_value_has_a_trailing_zero_after_its_integer_part():
+    """`200.0ms` / `8.0px` / `200.0%` 是同一个量的另一种写法，而按字形比的断言认不出它。
+
+    `_by_quantity` 只认带小数点的数（光秃秃的整数是门牌号——`--o-1`、`第 5 档`），
+    所以「整数 + `.0` + 单位」落在它的盲区里：`200.0ms` 与 `200ms` 渲染同一个量，
+    而按字形比的断言把它当另一个字。今天 `app.html` 里一处都没有——这一条守「别
+    写出第一处」：堵入口比让每一条断言都宽容便宜（v1.42 归到 #117 的那笔）。
+
+    只查 `app.html` 不查文档：文档里的数是抄本、按值比（拼法自由），§7.23 那句
+    「`5.0px`=`5px`」本身就是教学例句——它不是要禁的形态，是在讲这种形态。
+    """
+
+    pat = re.compile(r"(?<![\w.])\d+\.0+(?:ms|s|px|%|deg|em|rem|vw|vh|fr)(?![\w.])")
+    assert not pat.findall(APP_HTML), pat.findall(APP_HTML)
+
+
+def _first_duration(line: str) -> float | None:
+    """一条 animation 行里第一个时间值的毫秒数——CSS 简写语法里它就是 duration。
+
+    `animation: name 5s ease -4s` 里的 `-4s` 是 delay（表示立即开始、跳过前 4 秒），
+    不是周期。把 delay 当周期候选，`min(times)` 会在未来有人写 delay 时误报「太快」
+    （v1.42 归到 #117 的那笔）。按顺序取第一个时间值：duration 在 delay 之前，而
+    name 是标识符不是时间。
+    """
+
+    times = [float(a) * (1 if unit == "ms" else 1000) for a, unit in TIME.findall(line)]
+    return times[0] if times else None
+
+
 def test_ambient_loops_breathe_no_faster_than_three_seconds():
     too_fast = []
     for i, line in _animation_lines():
         if "infinite" not in line:
             continue
         name = re.search(r"animation:\s*([\w-]+)", line)
-        times = [
-            float(a) * (1 if unit == "ms" else 1000)
-            for a, unit in TIME.findall(line)
-        ]
-        if not times or min(times) >= 3000:
+        duration = _first_duration(line)
+        if duration is None or duration >= 3000:
             continue
         if name and name.group(1) in LIVE_INDICATORS:
             continue
         too_fast.append((i, line.strip()[:90]))
     # 低于 3s 会被读成「它在等我操作」，那是加载指示器的节奏，不是呼吸。
     assert too_fast == []
+    # 判据的语义由构造样本钉住：第一个时间值是 duration，delay（正负都是）不参与。
+    assert _first_duration("animation: breathe 5s ease -4s") == 5000
+    assert _first_duration("animation: breathe 2.5s linear") == 2500
+    assert _first_duration("animation: breathe 800ms ease 1.2s") == 800
 
 
 def test_every_live_indicator_is_still_actually_used():
@@ -328,7 +446,7 @@ def test_reduced_motion_stops_everything_and_lands_on_the_end_state():
     assert "animation-iteration-count:1!important" in block
     # 关键：不能用 animation:none——那会让元素停在**起始**帧。
     # 天气消散那次缺陷就是这么来的：用户看到一个卡住的东西，520ms 后才被 JS 移除。
-    assert "animation-duration:.001ms!important" in block
+    assert _by_quantity("animation-duration:.001ms!important") in _by_quantity(block)
     assert "animation:none" not in re.sub(r"/\*.*?\*/", "", block, flags=re.S)
 
 
@@ -344,8 +462,12 @@ def test_backdrop_filter_is_never_hand_written():
 def test_the_glass_system_is_one_system():
     assert sorted(t for t in DECLARED if t.startswith("--glass-")) == [
         "--glass-blur-1", "--glass-blur-2", "--glass-blur-3",
-        "--glass-border", "--glass-hi",
+        "--glass-border",
     ]
+    # `--glass-hi` 曾经在这张名单上。它的名字说「玻璃的顶部高光线」，可顶部高光是
+    # §6.1 那 55 层厚度线，而它的值（白第 4 档 .30）在那 55 层里出现 0 次；它唯一
+    # 那处引用画的是 `border`。玻璃只有一条边界线，不许有第二个名字（§6.1 判据八）。
+    assert "--glass-hi" not in LIVE_SOURCE
 
 
 # --- #8：圆角 --------------------------------------------------------------
@@ -1042,8 +1164,9 @@ def test_the_companion_state_is_carried_by_rhythm_not_hue():
     for word in ("在 听", "在 想", "在 回"):
         assert f"compState.textContent='{word}'" in APP_HTML, word
     # 节奏才是区分：在听 3.8s、在想 5s、在回定住（没有 dotPulse）
-    assert ".comp-state.listening::before{animation:dotPulse 3.8s" in CSS
-    assert ".comp-state.thinking::before{animation:dotPulse 5s" in CSS
+    css = _by_quantity(CSS)
+    assert _by_quantity(".comp-state.listening::before{animation:dotPulse 3.8s") in css
+    assert _by_quantity(".comp-state.thinking::before{animation:dotPulse 5s") in css
     assert not re.search(r"\.comp-state\.responding::before\{[^}]*animation", CSS_NO_COMMENTS)
     # 画布那边靠形状分状态（在想是绕着转的粒子，在回是涟漪），也不靠色相
     assert "if(state==='thinking'){" in APP_HTML and "if(state==='responding'){" in APP_HTML
@@ -1289,7 +1412,7 @@ def test_icons_wear_the_text_ladder_too():
         value = m.group(2).strip()
         if "var(--" in value or value in ("none", "currentColor", "transparent", "inherit"):
             continue
-        if re.fullmatch(r"[\d.]+", value):  # stroke-width 之类被切进来的数字
+        if _PLAIN_NUMBER.fullmatch(value):  # stroke-width 之类被切进来的数字
             continue
         bad.append(m.group(0)[:70])
     assert bad == [], bad
@@ -1531,15 +1654,169 @@ TEXT_PROPERTY = re.compile(
     r"line-height|text-transform|text-align|text-shadow|white-space|text-decoration)\s*:"
 )
 
-# 「这一位由用户的动作或系统的处境决定」——状态限定，不是一个档位。
-STATE_SELECTOR = re.compile(
-    r":hover|:focus|:focus-visible|:active|:disabled|:checked|:not\(|"
-    r"\.on\b|\.show\b|\.active\b|\.playing\b|\.open\b|\.expanded\b|\.collapsed\b|"
-    r"\.done\b|\.faded\b|\.overdue\b|\.long-pressing\b|\.pending\b|\.recording\b|"
-    r"\.rewritten\b|\.focused\b|\.has-open\b|\.no-img\b|\.typing\b|\.failed\b|"
-    r"\.dragging\b|\.group-collapsed\b|\.media-unavailable\b|\.scroll-locked\b|"
-    r"\[hidden\]|\[disabled\]|\[aria-"
+# 「什么算一个状态记号」——这份文件里只许有一把尺子（§7.23）。
+#
+# v1.37 已经写下这条法（「同一个概念不许留两把尺子，所以三个调用点一起换」），而同一轮
+# 留下的 `_covers(..., strip)` 那个参数正是它的反面：参数让调用方挑尺子，于是同一个概念
+# 可以在两个调用点上长成两个样子，而没有一条断言会红。审计出来的是**四把**：
+# `STATE_SELECTOR`、旧 `_STATE_TOKEN`、`_MATERIAL_STATE` 都并进了这一把，`_STATE_MARK`
+# （§7.16 用）是这一把的真子集，它看不见的那几条声明有账（见它自己那一行）。
+#
+# 类名那一半是这个 app 的数据，会腐，所以它自己有两条守卫：名单里的每个名字必须在 CSS 里
+# 真的出现（`.off` / `.closed` / `.selected` / `.loading` / `.error` 是这么删掉的），且脚本
+# 用 `classList` 装卸过、CSS 里又有规则的类名必须在名单里（19 个漏报是这么补上的）。
+# 伪类与状态属性那一半不受「必须出现」管：它编码的是 CSS / HTML / ARIA 的语义，一个今天
+# 没用到的名字不是腐烂的证据，而漏掉它就是一个洞——漏报比误报危险（§7.15）。
+STATE_CLASSES = frozenset({
+    "active", "busy", "canvas-ready", "collapsed", "companion-expanded", "dispersing",
+    "done", "dragging", "entering", "expanded", "faded", "failed", "flash", "fly-in",
+    "focused", "group-collapsed", "has-open", "listening", "lit", "live-off",
+    "long-pressing", "media-loading", "media-unavailable", "naming", "no-img", "on",
+    "open", "overdue", "pending", "playing", "recording", "removing", "responding",
+    "reveal", "rewritten", "scroll-locked", "show", "show-delete", "sub-open",
+    "thinking", "typing", "visible", "warn", "with-why",
+})
+
+# 必须整词匹配，而边界只能写成 `(?![\w-])`：`\.on` 不加边界会咬进 `.onboard-modal` 的中间；
+# 而 `\b` 也不行——`\.show\b` 会咬进 `.show-delete`（`w` 与 `-` 之间就是一个词边界）。
+# `STATE_SELECTOR` 一直是 `\b`，于是它把那两条 `.show-delete` 规则**答对了、理由是错的**，
+# 另外两把则整个看不见它们。
+# `:not(...)` 整段剥掉：它是一个状态限定的**否定**，主体还是同一个主体。漏了这一条，
+# `.gi:not(.media-unavailable):active::after` 的主体会算成 `.gi:not()::after`，于是它和
+# 基线那条 `.gi::after` 认不成同一个东西。
+# 属性那一支只收状态：HTML 的 `hidden` / `disabled`，加 ARIA 规范自己划出来的那一族
+# **state**（`aria-label` 这类 property 说的是这个东西是什么，不是它现在怎么样）。
+_STATE_TOKEN = re.compile(
+    r":not\([^()]*\)"
+    r"|:(?:hover|active|focus[\w-]*|disabled|checked|placeholder-shown)"
+    r"|\.(?:" + "|".join(sorted(STATE_CLASSES)) + r")(?![\w-])"
+    r"|\[(?:hidden|disabled)\]"
+    r"|\[aria-(?:busy|checked|current|disabled|expanded|hidden|invalid|pressed|selected)[^\]]*\]"
 )
+
+
+def _module_level_regexes() -> dict[str, re.Pattern[str]]:
+    """这份文件里所有模块级 `NAME = re.compile(...)` 的名字 → 它编译出来的那把尺子。"""
+    source = Path(__file__).resolve().read_text(encoding="utf-8")
+    out = {}
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "compile"):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                out[target.id] = globals()[target.id]
+    return out
+
+
+def _selector_branches() -> list[str]:
+    """所有顶层规则的选择器，逗号拆开、空白压平。"""
+    out = []
+    for selector, _ in _top_level_rules():
+        for part in selector.split(","):
+            part = re.sub(r"\s+", " ", part).strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def _css_class_names() -> set[str]:
+    """CSS 顶层选择器里真的出现过的类名。"""
+    names: set[str] = set()
+    for part in _selector_branches():
+        names.update(re.findall(r"\.([\w-]+)", part))
+    return names
+
+
+def test_only_one_ruler_says_what_a_state_token_is():
+    """「什么算一个状态记号」这个概念，这份文件里只许有一把尺子（§7.23）。
+
+    v1.37 写下这条法的同一轮留着 `_covers(..., strip)` 那个参数，而参数让调用方挑尺子——
+    于是这个概念在四个地方长成四个样子，没有一条断言会红：两份逐字节相同的名单各抄了
+    一遍；`_MATERIAL_STATE` 缺 15 个今天真在用的名字又带 2 个死名字；`STATE_SELECTOR`
+    的 `\\b` 咬进 `.show-delete` 的中间，把那两条规则**答对了、理由是错的**。所以这条法
+    自己需要一把尺子。
+
+    认尺子用的是**行为**，不是名字、也不是正则原文：一把尺子认状态记号
+    （`:hover` / `.done` / `[hidden]` 这一类），同时不认普通选择器（`div` / `.card`）。
+    这样第五把尺子换成什么拼法都躲不过去，而按「正则原文里有没有 `:hover`」去找就躲得过。
+    """
+    rulers = _module_level_regexes()
+    assert len(rulers) >= 20, sorted(rulers)  # 仪器自校验：扫瞎了只会报一个空集合
+    state = ("button:hover", ".card.done", "a:focus", "div[hidden]", "li:checked")
+    plain = ("div", ".card", "#panel", '[data-p="red"]', "p>span")
+    speaks = sorted(
+        name
+        for name, ruler in rulers.items()
+        if any(ruler.search(s) for s in state) and not any(ruler.search(p) for p in plain)
+    )
+    assert speaks == ["_HAND", "_STATE_MARK", "_STATE_TOKEN"], speaks
+
+    # 另外两把答的是更窄的问题（`_HAND` 是「哪里有一只手」，`_STATE_MARK` 是 §7.16 认的
+    # 那一档），所以它们必须是这一把的**真**子集：越出去一条，就是第二个答案而不是子问题。
+    branches = _selector_branches()
+    assert len(branches) > 800, len(branches)
+    for name in ("_HAND", "_STATE_MARK"):
+        narrow = rulers[name]
+        outside = [p for p in branches if narrow.search(p) and not _STATE_TOKEN.search(p)]
+        witness = [p for p in branches if _STATE_TOKEN.search(p) and not narrow.search(p)]
+        assert outside == [], (name, outside)
+        assert len(witness) > 50, (name, len(witness))
+
+    # 反方向：尺子宽了会把一条选择器整个吃光，于是它的「主体」是空串——而空串覆盖一切，
+    # §7.23 判据一会静静变成一句空话。这条守卫是那个方向上的唯一对手。
+    naked = [p for p in branches if not _STATE_TOKEN.sub("", p).strip()]
+    assert naked == [], naked
+
+
+def test_the_state_list_carries_no_name_the_css_never_uses():
+    """名单上的每个名字都得在 CSS 里真的出现——类名那一半是数据，会腐。
+
+    `.off` / `.closed` / `.selected` / `.loading` / `.error` 是这么删掉的：四把旧尺子各自
+    带着几个，而 CSS 里一处都没有。一个死名字不会让任何断言变红，它只是让读名单的人
+    以为那个状态还在被管着。
+    """
+    classes = _css_class_names()
+    assert len(classes) > 300, len(classes)  # 仪器自校验
+    dead = sorted(name for name in STATE_CLASSES if name not in classes)
+    assert dead == [], dead
+
+    line = _doc_line("### 7.23", "名单上今天有")
+    assert [len(STATE_CLASSES)] == [int(n) for n in re.findall(r"\*\*(\d+)\*\* 个类名", line)], (
+        len(STATE_CLASSES),
+        line,
+    )
+
+
+def test_a_class_the_script_mounts_and_the_css_styles_is_on_the_state_list():
+    """反方向：能机械查出来的状态不许漏——漏报比误报危险（§7.15）。
+
+    一个 class 是状态，最硬的证据是脚本在运行时装卸它。这条守卫补上了 19 个漏报
+    （`.show` 在 CSS 里 26 处、`.media-unavailable` 14 处，而四把旧尺子一把都不认）。
+
+    它只能守住 `classList` 那条通道：另有 8 个名字是靠 `className='…'` 拼串上身的，
+    这条守卫看不见它们，所以名单还得手写、还得靠上面那条守卫防腐（→ 另立一账）。
+    """
+    mounted: set[str] = set()
+    for call in re.finditer(
+        r"classList\s*\.\s*(?:add|remove|toggle|replace)\s*\(([^;]*?)\)", SCRIPT_NO_COMMENTS
+    ):
+        for literal in re.finditer(r"""['"]([^'"]+)['"]""", call.group(1)):
+            mounted.update(literal.group(1).split())
+    assert len(mounted) >= 30, sorted(mounted)  # 仪器自校验：解析瞎了只会报一个空集合
+
+    styled = _css_class_names()
+    missing = sorted(c for c in mounted & styled if c not in STATE_CLASSES)
+    assert missing == [], missing
+
+    line = _doc_line("### 7.23", "名单上今天有")
+    assert [len(mounted)] == [int(n) for n in re.findall(r"装卸的类名有 \*\*(\d+)\*\*", line)], (
+        len(mounted),
+        line,
+    )
+
 
 # 行内 style 里写 color 的 alpha，图形标签除外：`<svg style="color:rgba(...)">` 的
 # color 是喂 currentColor 给 stroke 的，那是图标不是字。按标签判，不按名单判。
@@ -1550,7 +1827,7 @@ _GRAPHIC_TAGS = {
 
 def _static_opacities(body: str) -> list[float]:
     """规则体里写死的中间 opacity。0 和 1 不算：那是开关，不是旋钮。"""
-    values = [float(m.group(1)) for m in re.finditer(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", body)]
+    values = [float(m.group(1)) for m in _OPACITY_VALUE.finditer(body)]
     return [v for v in values if 0 < v < 1]
 
 
@@ -1565,7 +1842,7 @@ def test_the_opacity_instrument_can_actually_see_the_file():
     assert len(rules) > 600, len(rules)
     text_rules = [s for s, b in rules if TEXT_PROPERTY.search(b)]
     assert len(text_rules) > 200, len(text_rules)
-    state_rules = [s for s, b in rules if STATE_SELECTOR.search(s)]
+    state_rules = [s for s, b in rules if _STATE_TOKEN.search(s)]
     assert len(state_rules) > 80, len(state_rules)
     # 而且它确实能在字上读出 opacity —— 拿关键帧作正对照：淡入淡出是合法用法，
     # 也证明 `_static_opacities` 的正则不是一直返回空表。
@@ -1584,7 +1861,7 @@ def test_text_brightness_comes_only_from_the_colour_tier():
     bad = [
         (re.sub(r"\s+", " ", sel).strip(), _static_opacities(body))
         for sel, body in _top_level_rules()
-        if _static_opacities(body) and TEXT_PROPERTY.search(body) and not STATE_SELECTOR.search(sel)
+        if _static_opacities(body) and TEXT_PROPERTY.search(body) and not _STATE_TOKEN.search(sel)
     ]
     assert bad == [], bad
 
@@ -1606,7 +1883,7 @@ def test_a_rule_that_names_a_text_colour_has_no_second_knob():
         if not colour or not tier.search(colour.group(1)):
             continue
         values = _static_opacities(body)
-        if values and not STATE_SELECTOR.search(sel):
+        if values and not _STATE_TOKEN.search(sel):
             bad.append((re.sub(r"\s+", " ", sel).strip(), colour.group(1).strip(), values))
     assert bad == [], bad
 
@@ -1620,7 +1897,7 @@ def _dimming_keyframes() -> dict[str, float]:
         while i < len(css) and depth:
             depth += (css[i] == "{") - (css[i] == "}")
             i += 1
-        values = [float(x) for x in re.findall(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", css[m.end() : i - 1])]
+        values = [float(x) for x in _OPACITY_VALUE.findall(css[m.end() : i - 1])]
         if values and min(values) < 1:
             out[m.group(1)] = min(values)
     return out
@@ -1679,10 +1956,16 @@ def test_a_rule_that_names_a_text_colour_is_not_also_animated_dimmer():
 
 # 「这是一个状态」的写法：伪类，或者一个说状态的类名。状态通道的判据只对这些生效，
 # 材料与图形上的 opacity 归 #29/#49，它们答的不是同一个问题。
+#
+# 这是 `_STATE_TOKEN` 的**真子集**，而且是一笔明账（§7.23，v1.39）：它今天看不见 7 条状态
+# 减光声明，那 7 条带进来 5 个新值（0.32 / 0.55 / 0.7 / 0.72 / 0.9），而「它们算不算状态
+# 减光、各落哪一档」是 #32 的问法，不是「几把尺子」这一问 → #110。子集关系与那 7 条
+# 由守卫钉着，所以它既不能自己长出名字，也不能静静多漏一条。
+# `.selected` / `.disabled` / `.loading` / `.error` / `.closed` 是这么删掉的：CSS 里一处都没有。
 _STATE_MARK = re.compile(
     r":disabled|\[disabled\]|:hover|:active|:focus|:checked|"
-    r"\.(?:done|faded|open|show|pending|recording|selected|disabled|dragging|"
-    r"loading|failed|error|closed|collapsed|has-open)(?![\w-])"
+    r"\.(?:done|faded|open|show|pending|recording|dragging|"
+    r"failed|collapsed|has-open)(?![\w-])"
 )
 
 
@@ -1705,7 +1988,7 @@ def _opacity_rules() -> list[tuple[str, float, str]]:
     """(单条选择器, 声明的 opacity, 规则体)，只要顶层写了 opacity 的。逗号已拆开。"""
     out = []
     for selector, body in _top_level_rules():
-        m = re.search(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", body)
+        m = _OPACITY_VALUE.search(body)
         if not m:
             continue
         for one in selector.split(","):
@@ -1713,6 +1996,39 @@ def _opacity_rules() -> list[tuple[str, float, str]]:
             if one:
                 out.append((one, float(m.group(1)), body))
     return out
+
+
+def test_the_narrower_state_mark_is_blind_to_exactly_these_declarations():
+    """`_STATE_MARK` 比 `_STATE_TOKEN` 窄，差额是一笔钉住的账（§7.23，v1.39 → #110）。
+
+    并到第四把就得先答另一个问题：这 7 条声明算不算状态减光、各落哪一档。那是 #32 的
+    问法（其中四条已经是 #62/#63 的地界，`.scene-canvas` 那两条正是 #63 点名的两块氛围
+    画布），不是「同一个概念有几把尺子」这一问。所以这一轮不并，改成把差额钉住：子集
+    关系由上面那条守卫守着，差额由这条守着——它既不能自己长出名字，也不能静静多漏
+    一条，于是 §7.16 那把四档阶梯「今天只读到 4 个值」也就有了对手。
+    """
+    ledger = {
+        "#screen-companion.canvas-ready::before": 0.32,
+        ".le-agent-copy.rewritten::after": 0.55,
+        "body.companion-expanded #screen-companion.canvas-ready::before": 0.55,
+        ".memo-group-title.overdue .bar": 0.7,
+        ".life-entry.long-pressing": 0.72,
+        "#screen-me.active .scene-canvas": 0.85,
+        "#screen-river.active .scene-canvas": 0.9,
+    }
+    blind = {
+        sel: value
+        for sel, value, _ in _opacity_rules()
+        if 0 < value < 1 and _STATE_TOKEN.search(sel) and not _STATE_MARK.search(sel)
+    }
+    assert blind == ledger, sorted(set(blind.items()) ^ set(ledger.items()))
+    # 而它们带进来的确实是 §7.16 那四档之外的新值——这才是「得先答哪一档」的理由。
+    newcomers = sorted(set(blind.values()) - {0.28, 0.34, 0.5, 0.85})
+    assert newcomers == [0.32, 0.55, 0.7, 0.72, 0.9], newcomers
+
+    line = _doc_line("### 7.23", "§7.16 那把尺子今天看不见")
+    written = [int(n) for n in _DOC_BOLD_NUM.findall(line)]
+    assert written == [len(ledger), len(newcomers)], (written, line)
 
 
 def test_two_state_opacities_never_sit_on_one_ancestor_chain():
@@ -1833,7 +2149,7 @@ def _keyframe_opacity_mean(name: str) -> float:
     """
     stops = []
     for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", _keyframe_bodies()[name]):
-        o = re.search(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", m.group(2))
+        o = _OPACITY_VALUE.search(m.group(2))
         if not o:
             continue
         for part in m.group(1).split(","):
@@ -1973,7 +2289,7 @@ def test_dimmed_text_that_already_has_a_colour_tier_has_a_named_reason():
     tiers, dimmers = [], []
     for selector, body in _top_level_rules():
         colour_decl = re.search(r"(?<![-\w])color\s*:\s*([^;}]+)", body)
-        opacity = re.search(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", body)
+        opacity = _OPACITY_VALUE.search(body)
         for one in selector.split(","):
             one = re.sub(r"\s+", " ", one).strip()
             if not one:
@@ -2032,7 +2348,7 @@ def test_a_colour_alpha_on_text_is_only_ever_written_by_a_state():
         faded = [a for a in _rgba_alphas(colour.group(1)) if a < 1]
         if not faded:
             continue
-        target = legal if STATE_SELECTOR.search(sel) else bad
+        target = legal if _STATE_TOKEN.search(sel) else bad
         target.append((re.sub(r"\s+", " ", sel).strip(), colour.group(1).strip(), faded))
     assert bad == [], bad
     # 正对照：如果一处都没有，说明这条守卫今天没有量到任何东西。
@@ -2118,26 +2434,13 @@ def test_one_selector_declares_opacity_at_most_once():
     """
     bad = []
     for sel, body in _top_level_rules():
-        declared = re.findall(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", body)
+        declared = _OPACITY_VALUE.findall(body)
         if len(declared) > 1:
             bad.append((re.sub(r"\s+", " ", sel).strip(), declared))
     assert bad == [], bad
 
 
-# 状态限定本身（把它从选择器上剥下来，剩下的就是「主体」）。
-# 必须整词匹配：`\.on` 不加边界会咬进 `.onboard-modal` 的中间。
-# `:not(...)` 整段剥掉：它是一个状态限定的**否定**，主体还是同一个主体。漏了这一条，
-# `.gi:not(.media-unavailable):active::after` 的主体会算成 `.gi:not()::after`，
-# 于是它和基线那条 `.gi::after` 认不成同一个东西——而 `STATE_SELECTOR` 一直把
-# `:not(` 当状态，两把尺子对不上（§7.21 加那条 `:not` 时才撞出来）。
-_STATE_TOKEN = re.compile(
-    r":not\([^()]*\)|"
-    r":hover|:focus-visible|:focus|:active|:disabled|:checked|"
-    r"\.(?:on|show|active|playing|open|expanded|collapsed|done|faded|overdue|"
-    r"long-pressing|pending|recording|rewritten|focused|has-open|no-img|typing|"
-    r"failed|dragging|group-collapsed|media-unavailable|scroll-locked)(?![\w-])|"
-    r"\[hidden\]|\[disabled\]"
-)
+# 状态限定本身（把它从选择器上剥下来，剩下的就是「主体」）。尺子只有一把，见 `_STATE_TOKEN`。
 
 
 def _subject(part: str) -> str:
@@ -2165,7 +2468,7 @@ def test_a_state_rule_that_restores_full_opacity_has_something_to_restore():
     # 谁在基线上真的声明过 opacity（不分值，0 和 1 都算：0 也是一个对手）
     dimmed = set()
     for sel, body in rules:
-        if STATE_SELECTOR.search(sel):
+        if _STATE_TOKEN.search(sel):
             continue
         if not re.search(r"(?<![-\w])opacity\s*:", body):
             continue
@@ -2174,9 +2477,9 @@ def test_a_state_rule_that_restores_full_opacity_has_something_to_restore():
 
     bad, legal = [], []
     for sel, body in rules:
-        if not STATE_SELECTOR.search(sel):
+        if not _STATE_TOKEN.search(sel):
             continue
-        if not any(float(v) == 1.0 for v in re.findall(r"(?<![-\w])opacity\s*:\s*([0-9.]+)", body)):
+        if not any(float(v) == 1.0 for v in _OPACITY_VALUE.findall(body)):
             continue
         flat = re.sub(r"\s+", " ", sel).strip()
         if all(_subject(p) not in dimmed for p in sel.split(",")):
@@ -2265,7 +2568,9 @@ def test_the_only_important_left_is_the_one_that_cannot_win_by_specificity():
     多出第四处，断言也会说话。
     """
     sites = _important_sites()
-    assert {decl for _, decl in sites} == _REDUCED_MOTION_TRIO, sites
+    assert {_by_quantity(decl) for _, decl in sites} == {
+        _by_quantity(decl) for decl in _REDUCED_MOTION_TRIO
+    }, sites
 
     # 位置也要对：同样三条声明写在顶层，是另一件事（它会把所有人的动画都停掉）。
     block = re.search(r"@media[^{]*prefers-reduced-motion[^{]*\{", CSS)
@@ -2580,7 +2885,7 @@ def _rungs_on(selector: str, prop_pattern: str) -> set[str]:
     for sel, prop, val in _face_and_line_declarations():
         if sel != selector or not want.match(prop):
             continue
-        found.update(re.findall(r"var\((--o-\d+)\)", val))
+        found.update(_O_TOKEN_REF.findall(val))
     return found
 
 
@@ -2597,8 +2902,8 @@ def test_the_ladder_has_exactly_seven_rungs_with_the_documented_values():
     """
     root = re.search(r":root\s*\{(.*?)\n\s*\}", CSS_NO_COMMENTS, re.S)
     assert root, ":root 没找到"
-    got = {k: v.strip() for k, v in re.findall(r"(--o-\d+)\s*:\s*([^;]+);", root.group(1))}
-    assert got == LADDER, got
+    got = {k: _by_quantity(v.strip()) for k, v in re.findall(r"(--o-\d+)\s*:\s*([^;]+);", root.group(1))}
+    assert got == {k: _by_quantity(v) for k, v in LADDER.items()}, got
 
 
 def test_a_face_or_a_line_names_a_rung_instead_of_a_number():
@@ -2609,16 +2914,36 @@ def test_a_face_or_a_line_names_a_rung_instead_of_a_number():
     这个检验是可判定的，所以渐变和多层阴影不需要一张要维护的例外名单。
 
     渐变**底下**那层平面另算：它是平面，仍然是一档（`_strip_gradients` 之后再查）。
+
+    纯黑的面另算（判据七，§6.1）：`--o-N` 是**白**的价钱，黑不配——黑纱压上近黑
+    地色几乎无处可去（整条 alpha 通道只值 4 档 / 2 档）。所以黑面的 alpha 手写
+    （三个删除圆键 `.le-delete` / `.memo-delete` / `.lap-img-item .mi-remove` 的
+    `rgba(0,0,0,.72)`），不许冒充白纱的档；「黑的面用 `var(--o-N)`」由另一条守卫
+    直接禁。
     """
     offenders = []
     for sel, prop, val in _face_and_line_declarations():
+        if "rgba(0,0,0" in val:
+            continue
         has_gradient = "gradient(" in val
         args = _rgba_last_args(_strip_gradients(val) if has_gradient else val)
         if len(args) != 1:
             continue
-        if re.fullmatch(r"[\d.]+", args[0]) and float(args[0]) not in (0.0, 1.0):
+        if _PLAIN_NUMBER.fullmatch(args[0]) and float(args[0]) not in (0.0, 1.0):
             offenders.append((sel, prop, args[0]))
     assert offenders == [], offenders
+
+
+def test_black_never_names_a_rung():
+    """黑的 alpha 不许写 `var(--o-N)`（判据七：`--o-N` 是白的价钱）。
+
+    判据七的禁令原先只覆盖「光的 alpha」，而 `--o-N` 只承诺 alpha、不承诺一档这句
+    话对**黑的面与线**同样成立——黑纱压近黑地色整条通道只值 4 档 / 2 档，把
+    `rgba(0,0,0,var(--o-6))` 写成「第 6 档」是把黑的 alpha 冒充白纱的档。三个删除
+    圆键是第一实例（v1.45 改手写 `.72`）。这一条守「第二处不再出现」。
+    """
+
+    assert not re.findall(r"rgba\(0,\s*0,\s*0,\s*var\(--o-\d+\)", CSS_NO_COMMENTS)
 
 
 def test_two_or_more_alphas_in_one_declaration_always_means_a_gradient():
@@ -2637,13 +2962,13 @@ def test_two_or_more_alphas_in_one_declaration_always_means_a_gradient():
 
 
 def test_the_glass_tokens_come_from_the_ladder():
-    """三个玻璃 token 自己也走梯子，否则它们的 22 处引用整片脱轨。
+    """两个玻璃 token 自己也走梯子，否则它们的引用整片脱轨。
 
     `--glass-border` 原先是 .12，正好卡在第 2、3 档中间，作者自己的值问不出答案；
     用文件自己的事实定：72 条同时写了面与线的规则，线/面比值中位数 3.46，
     而这块面（`--bg-card`）是第 1 档，3.46 × .04 = .138 → 第 3 档。
     """
-    expect = {"--bg-card": "--o-1", "--glass-border": "--o-3", "--glass-hi": "--o-4"}
+    expect = {"--bg-card": "--o-1", "--glass-border": "--o-3"}
     for token, rung in expect.items():
         m = re.search(rf"{token}\s*:\s*([^;]+);", CSS_NO_COMMENTS)
         assert m, token
@@ -2688,25 +3013,29 @@ def test_a_scrim_that_carries_text_over_a_photo_is_the_sixth_rung():
     第 5 档只有 3.31 / 1.84。作者原先写的 .4/.5/.55 里有三个本来就不合格
     （纯黑 .4 → 2.96、.5 → 4.07；纱 .55 → 4.55 只够 `--text` 一档用）。
 
-    七处分两族：四个标签幕用纱，三个圆键用纯黑。圆键该不该也换成纱是另一项待办
-    （§7.9「一个房间一种材料」），本轮只统一档位。
+    七处分两族：四个标签幕用纱，三个圆键用纯黑。**圆键不是幕**（v1.45 判定：
+    它们是黑材料，不是压照片的纱——`--o-N` 是白的价钱，黑不配（判据七）；而且
+    白纱需要深字，而深字在文字阶梯外，--ink 只给那张纸）。所以圆键从这张名单
+    拆出去，alpha 手写（黑只值 4 档 / 2 档，值本身归黑材料的档那一笔账）。
     """
     scrims = {
         ".le-img-grid .gi.live-photo::before,.le-img-band .gi.live-photo::before",
         ".le-img-grid .gi.live-photo::after,.le-img-band .gi.live-photo::after",
         ".lap-img-item.live-part::after",
         ".dv-card.live-off::before",
-        ".le-delete",
-        ".memo-delete",
-        ".lap-img-item .mi-remove",
     }
+    black_keys = {".le-delete", ".memo-delete", ".lap-img-item .mi-remove"}
     seen = set()
     for sel, prop, val in _face_and_line_declarations():
-        if sel not in scrims or prop != "background":
+        if prop != "background":
             continue
-        seen.add(sel)
-        assert re.findall(r"var\((--o-\d+)\)", val) == ["--o-6"], (sel, val)
-    assert seen == scrims, sorted(scrims - seen)
+        if sel in scrims:
+            seen.add(sel)
+            assert _O_TOKEN_REF.findall(val) == ["--o-6"], (sel, val)
+        elif sel in black_keys:
+            seen.add(sel)
+            assert re.fullmatch(r"rgba\(0,0,0,\d*\.\d+\)", val), (sel, val)
+    assert seen == scrims | black_keys, sorted((scrims | black_keys) - seen)
 
 
 def test_every_page_veil_is_the_sixth_rung_except_the_one_you_walked_into():
@@ -2725,7 +3054,7 @@ def test_every_page_veil_is_the_sixth_rung_except_the_one_you_walked_into():
             continue
         if "mask" not in sel:
             continue
-        veils[sel] = re.findall(r"var\((--o-\d+)\)", val)
+        veils[sel] = _O_TOKEN_REF.findall(val)
     assert len(veils) == 7, sorted(veils)
     assert veils.pop(".dv-mask", None) == ["--o-7"], "详情页那层幕是唯一一个「你已经进去了」"
     for sel, rungs in veils.items():
@@ -3054,18 +3383,22 @@ def test_the_opacity_knob_table_recomputes_cell_by_cell():
     """
 
     deep, faint = _tier("--bg-deep"), _tier("--text-faint")
-    rows = [r for r in _doc_rows("### 7.11") if re.fullmatch(r"\d\.\d+", r[0])]
+    rows = [r for r in _doc_rows("### 7.11") if re.fullmatch(_NUM, r[0])]
     assert len(rows) == 8, f"§7.11 的旋钮表应有 8 行，读到 {len(rows)}"
     for alpha_text, ground, contrast_text, delta_text, _why in rows:
         composited = colour.over(faint, deep, float(alpha_text))
         assert tuple(int(x) for x in ground.strip("()").split(",")) == composited, (
             f"α={alpha_text} 的合成 RGB 该是 {composited}，文档写 {ground}"
         )
-        assert f"{colour.contrast(composited, deep):.2f}:1" == contrast_text, (
+        assert _by_quantity(f"{colour.contrast(composited, deep):.2f}:1") == _by_quantity(
+            contrast_text
+        ), (
             f"α={alpha_text} 的对比度该是 {colour.contrast(composited, deep):.2f}:1，"
             f"文档写 {contrast_text}"
         )
-        assert f"{colour.delta_e(faint, composited):.2f}" == delta_text, (
+        assert _by_quantity(f"{colour.delta_e(faint, composited):.2f}") == _by_quantity(
+            delta_text
+        ), (
             f"α={alpha_text} 的 ΔE 该是 {colour.delta_e(faint, composited):.2f}，"
             f"文档写 {delta_text}"
         )
@@ -3174,7 +3507,7 @@ def test_the_sixth_step_is_the_lowest_veil_a_caption_survives():
         ground = colour.over(veil, photo, alpha)
         return colour.contrast(text, ground), colour.contrast(dim, ground)
 
-    rows = [r for r in _doc_rows(section) if re.fullmatch(r"第 \d 档 \.\d+", r[0])]
+    rows = [r for r in _doc_rows(section) if re.fullmatch(r"第 \d 档 " + _NUM, r[0])]
     assert len(rows) == 2, f"那张对比度表应有两行（第 5、6 档），读到 {len(rows)}"
     for first, *cells in rows:
         alpha = float(first.split()[-1])
@@ -3291,7 +3624,7 @@ def _layers_in(value: str, base: tuple[int, int, int]) -> list[tuple[int, int, i
         rung = re.fullmatch(r"var\((--o-\d)\)", raw)
         if rung:
             out.append(colour.over(rgb, base, float(_root_value(rung.group(1)))))
-        elif re.fullmatch(r"[\d.]+", raw):
+        elif _PLAIN_NUMBER.fullmatch(raw):
             out.append(colour.over(rgb, base, float(raw)))
     for m in re.finditer(r"var\((--[\w-]+)\)", value):
         if m.group(1) in _ROOT_HEX:
@@ -3379,7 +3712,9 @@ def test_the_ladder_is_only_a_ladder_below_a_floor_that_can_be_solved_for():
     assert gates == sorted(gates), gates
     line = _doc_line("### 7.17", "三个门槛")
     for value in gates:
-        assert f"{value:.4f}" in line, f"§7.17 该写 L={value:.4f}，那一行是：{line}"
+        assert _by_quantity(f"{value:.4f}") in _by_quantity(line), (
+            f"§7.17 该写 L={value:.4f}，那一行是：{line}"
+        )
 
 
 def test_the_fifth_veil_is_the_last_rung_the_ladder_survives():
@@ -3396,7 +3731,9 @@ def test_the_fifth_veil_is_the_last_rung_the_ladder_survives():
     line = _doc_line("### 7.17", "换算成白纱")
     for base in ("--bg-lift", "--bg-deep"):
         alpha = _veil_crossing(_tier(base))
-        assert f"{alpha:.4f}" in line, f"§7.17 该写压在 {base} 上的交界 α={alpha:.4f}，那一行是：{line}"
+        assert _by_quantity(f"{alpha:.4f}") in _by_quantity(line), (
+            f"§7.17 该写压在 {base} 上的交界 α={alpha:.4f}，那一行是：{line}"
+        )
 
 
 def test_no_floor_past_the_gate_carries_a_word():
@@ -3451,7 +3788,9 @@ def test_the_paper_is_past_the_gate_and_that_is_exactly_why_it_has_its_own_ink()
         assert tier not in body, f"纸上又用回了三档：{tier}"
     line = _doc_line("### 7.17", "那张纸")
     for value in (colour.luminance(paper), gate):
-        assert f"{value:.4f}" in line, f"§7.17 该写 {value:.4f}，那一行是：{line}"
+        assert _by_quantity(f"{value:.4f}") in _by_quantity(line), (
+            f"§7.17 该写 {value:.4f}，那一行是：{line}"
+        )
 
 
 # --- #34 / §7.18：可点性线索必须长在这个东西自己的身体上 ----------------------
@@ -4742,6 +5081,10 @@ def test_the_waiting_is_one_material_with_one_definition():
         if len(r) == 3 and re.fullmatch(r"[a-z]+(?:-[a-z]+)*", r[0])
     ]
     assert {r[0] for r in props} == set(decls), ([r[0] for r in props], sorted(decls))
+    # 这里比的是**字节**，不是量——全文件唯一一处（§7.15）。因为这张表的身份是这条 CSS
+    # 规则的**抄本**：抄本的判据就是「逐字相同」，换一种拼法的抄本已经不是抄本了。
+    # 判别法是机械的：抄本类改**任一侧**都会红（这一条在 app.html 改与在文档改都红），
+    # 而按量比的那一类只有改被抄的那一侧才红。
     for prop, value, _ in props:
         assert value == decls[prop], (prop, value, decls[prop])
 
@@ -4877,11 +5220,40 @@ def _faces_by_subject() -> tuple[dict[tuple[str, str], dict[str, str]], list[tup
     return base, state
 
 
-def _baseline_of(
+def _ruling_baselines(owners: list[str]) -> list[str]:
+    """一组都覆盖同一条状态的基线里，层叠中赢的那些（>1 条 ⇒ 判不出谁赢，得出声）。"""
+
+    return [x for x in owners if not any(y != x and _covers(x, y) for y in owners)]
+
+
+def _baseline_under(
     base: dict[tuple[str, str], dict[str, str]], part: str, fam: str
-) -> dict[str, str]:
-    key = re.sub(r"\s+", " ", _STATE_TOKEN.sub("", part)).strip()
-    return base.get((key, fam), {})
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """这条状态声明脚下的基线：**逐个属性**取层叠里赢的那一条。
+
+    返回 ({属性: (值, 那条基线的选择器)}, 判不出谁赢的那些属性)。
+
+    先前这里拿「剥掉状态记号后的选择器字符串」当 dict 键，那把尺子对不上层叠的三处：
+      · 层叠是**有方向**的。`.icon-btn:hover` 脚下压着的是 `.topbar .icon-btn`，字符串
+        相等看不出来（今天 18 条状态因此一条基线都查不到）。方向也不能换成对称的「同
+        一块材料」：基线更特化时（今天 21 对），那条状态只在一部分宿主上重述基线，它
+        在别的宿主上仍然是一句话，不是死声明。
+      · 一条状态脚下可以压着**几条**基线（今天 8 处），而它们的值全都不同。
+      · 层叠按**属性**分胜负，不按规则：`.cm-btn{background}` 与
+        `.cm-btn.danger{border-color}` 同时覆盖 `.cm-btn.danger:hover`，按规则取赢家
+        会把 `background` 那一条整条丢掉——漏报（§7.12）。
+    """
+
+    cover = [b for (b, f) in base if f == fam and _covers(b, part)]
+    won: dict[str, tuple[str, str]] = {}
+    tie: list[str] = []
+    for prop in sorted({k for b in cover for k in base[(b, fam)]}):
+        tops = _ruling_baselines([b for b in cover if prop in base[(b, fam)]])
+        if len(tops) == 1:
+            won[prop] = (base[(tops[0], fam)][prop], tops[0])
+        else:
+            tie.append(f"{fam} {prop} 脚下比不出高低 {sorted(tops)}  {part}")
+    return won, tie
 
 
 def test_a_state_that_repaints_the_baseline_byte_for_byte_never_happened():
@@ -4897,13 +5269,129 @@ def test_a_state_that_repaints_the_baseline_byte_for_byte_never_happened():
     """
 
     base, state = _faces_by_subject()
-    dead = []
+    dead, tie, standing = [], [], 0
     for part, fam, prop, value in state:
-        for bprop, bval in _baseline_of(base, part, fam).items():
+        won, part_tie = _baseline_under(base, part, fam)
+        tie += part_tie
+        standing += bool(won)
+        for bprop, (bval, owner) in won.items():
             if _painted(bval) == _painted(value):
-                dead.append(f"{fam} {prop} = 基线 {bprop}  {part}  ({value[:60]})")
+                dead.append(f"{fam} {prop} = {owner} 的 {bprop}  {part}  ({value[:60]})")
                 break
     assert not dead, dead
+    assert not tie, tie
+
+    # 这两个数是这条判据的覆盖面：脚下一条基线都查不到的那些状态，判据一对它们无话可说。
+    # 换尺子那一轮它是 95/118，新尺子 113/118（§7.15：文档里的数要能被今天的文件重算）。
+    line = _doc_line("### 7.23", "面与线这条通道上今天有")
+    assert (len(state), standing) == tuple(
+        int(n) for n in _DOC_BOLD_COUNT.findall(line)
+    ), (len(state), standing, line)
+
+
+_SHADOW_PROP = re.compile(r"^(box-shadow|text-shadow|filter)$")
+
+
+def _one_spelling_per_number(value: str) -> str:
+    """把一条光的值里每个数写成规范形，再比。
+
+    这是光这条通道要摘的那副面具：同一个 alpha 在这个文件里有两种拼法（`.11` 式 39
+    次、`0.11` 式 146 次），同一个零可以写成 `0` 也可以写成 `0px`。两种拼法画出来的
+    是同一层光，逐字节比会让重述从旁边走过去——而漏报不会让任何人动手（§7.12）。
+    """
+
+    def one(m: re.Match[str]) -> str:
+        return ("%f" % float(m.group(0))).rstrip("0").rstrip(".") or "0"
+
+    v = re.sub(r"\s+", " ", value).strip().lower()
+    v = re.sub(r"\d*\.?\d+", one, v)
+    v = re.sub(r"(?<![\w.])0px\b", "0", v)
+    return re.sub(r"\s*,\s*", ",", v)
+
+
+def _light_declarations_by_selector() -> tuple[dict[tuple[str, str], str], list[tuple[str, str, str]]]:
+    """光的三条通道，按选择器分成「平时」和「现在不一样了」两堆，跳过 @keyframes。
+
+    @keyframes 不是状态，是时间——而且把它当状态会当场造出误报：`fieldBreathe` 的 0%
+    与 100% **逐字节等于** `.comp-input .field` 的静态 `box-shadow`，因为一个循环必须
+    回到自己的起点，否则每一圈结束的那一帧会跳。
+    """
+
+    base: dict[tuple[str, str], str] = {}
+    state: list[tuple[str, str, str]] = []
+    for stack, decl in _declarations_everywhere():
+        if any(s.startswith("@keyframes") for s in stack):
+            continue
+        prop, sep, value = (p.strip() for p in decl.partition(":"))
+        if not sep or not _SHADOW_PROP.match(prop):
+            continue
+        if prop == "filter" and "drop-shadow" not in value:
+            continue
+        value = _expand_rung_tokens(value)
+        for part in (stack[-1] if stack else "").split(","):
+            part = re.sub(r"\s+", " ", part).strip()
+            if not part:
+                continue
+            if _is_state(part):
+                state.append((part, prop, value))
+            else:
+                base[(part, prop)] = value
+    return base, state
+
+
+def test_a_state_that_repaints_the_light_it_already_had_never_happened():
+    """判据一（§7.23）的第三条通道：状态在光上重述基线 ⇒ 一句没发生的话。
+
+    判据一原先只覆盖面与线。不是因为光上没有这个病，是因为 #48 那一节的题目是
+    「哪一档」，而光归 §6——整条通道从判据旁边走过去了（§7.7 那个形状，§7.23 自己
+    已经记过一次「让一节的题目决定判据的覆盖面」，这是第二次）。
+
+    三条通道是同一条法，但**每条通道要摘掉的面具不一样**，因为「这条声明画出来的是
+    什么」在两处是两件事：
+      面与线：剥掉几何。`1px solid` 不画颜色，`border:1px solid X` 与 `border-color:X`
+        画的是同一条线。
+      光：**几何一个字都不许剥。** 偏移与模糊就是这层光在说的那句话（判据五定 y 的
+        符号、判据六定 blur = 4y）。套用面与线那把剥子，`0 1px 0 X` 和 `0 2px 0 X`
+        会被剥成同一条——一个「浮 1px」和一个「浮 2px」在它眼里没有区别。
+    光这边要摘的是数字的拼法（`_one_spelling_per_number`）。
+
+    今天 0 处，所以这条守卫是纯防漏报的：它承不承重由变异测试证明，不由今天的绿色
+    证明（§7.9「一条没有对手的声明是死声明」的镜像——一条没有对手的**守卫**是死守卫）。
+    """
+
+    base, state = _light_declarations_by_selector()
+    dead, tie, standing = [], [], 0
+    for part, prop, value in state:
+        tops = _ruling_baselines(
+            [b for (b, pr) in base if pr == prop and _covers(b, part)]
+        )
+        if len(tops) > 1:
+            tie.append(f"{prop} 脚下比不出高低 {sorted(tops)}  {part}")
+            continue
+        if not tops:
+            # `box-shadow` 的初始值就是 `none`：基线什么都没写，等于基线写了 none。
+            # 这是 `border:0` 重述 `border:0` 那一种病，只是换了一条通道。
+            if _one_spelling_per_number(value) == "none":
+                dead.append(f"{prop}:none 而基线这条通道上什么都没有  {part}")
+            continue
+        standing += 1
+        if _one_spelling_per_number(base[(tops[0], prop)]) == _one_spelling_per_number(value):
+            dead.append(f"{prop} = {tops[0]} 上同一条  {part}  ({value[:60]})")
+    assert not dead, dead
+    assert not tie, tie
+
+    # 正对照：这两个数写进文档就得能被今天的文件重算出来（§7.15）。
+    line = _doc_line("### 7.23", "光这条通道上")
+    assert (len(base), len(state)) == tuple(
+        int(n) for n in _DOC_BOLD_COUNT.findall(line)
+    ), (len(base), len(state), line)
+
+    # 这条通道的覆盖面分两半：脚下查得到基线的那些走「逐字节相同」，脚下什么都没有的
+    # 那些走 `none` 那个入口（初始值就是 none，所以基线不写等于基线写了 none）。
+    line = _doc_line("### 7.23", "光上脚下")
+    assert (standing, len(state) - standing) == tuple(
+        int(n) for n in _DOC_BOLD_COUNT.findall(line)
+    ), (standing, len(state) - standing, line)
 
 
 def test_the_hand_moves_exactly_one_rung_up_and_never_changes_the_hue():
@@ -4924,7 +5412,7 @@ def test_the_hand_moves_exactly_one_rung_up_and_never_changes_the_hue():
     """
 
     base, state = _faces_by_subject()
-    bad, spoken = [], 0
+    bad, tie, spoken = [], [], 0
     for part, fam, prop, value in state:
         if not _HAND.search(part):
             continue
@@ -4933,14 +5421,15 @@ def test_the_hand_moves_exactly_one_rung_up_and_never_changes_the_hue():
             continue
         hue, rung = picks[0]
         where = f"{fam} {prop}  {part}"
-        baseline = _baseline_of(base, part, fam)
+        baseline, part_tie = _baseline_under(base, part, fam)
+        tie += part_tie
         if not baseline:
             if rung == 1:
                 spoken += 1
             else:
                 bad.append(f"从无到有却落在 o-{rung} 而不是第一档  {where}")
             continue
-        under = [pick for v in baseline.values() for pick in _rung_picks(v)]
+        under = [pick for v, _owner in baseline.values() for pick in _rung_picks(v)]
         if not under:
             bad.append(f"基线在这条通道上不是一档（斜坡或手写），手不该在这里说话  {where}")
             continue
@@ -4948,13 +5437,14 @@ def test_the_hand_moves_exactly_one_rung_up_and_never_changes_the_hue():
         if not same_hue:
             bad.append(f"换了色相 基线 {sorted(set(under))} → {picks}  {where}")
             continue
-        slope = "gradient(" in value or any("gradient(" in v for v in baseline.values())
+        slope = "gradient(" in value or any("gradient(" in v for v, _owner in baseline.values())
         step = rung - max(same_hue)
         if step == 1 or (step == 0 and slope):
             spoken += 1
         else:
             bad.append(f"跨 {step:+d} 档 基线 o-{max(same_hue)} → o-{rung}  {where}")
     assert not bad, bad
+    assert not tie, tie
     # 一个空的判据也是绿的。手在面与线上说话的处数得和文档里那个数对上，否则「全 app
     # 都合格」这句话可能只是因为没有一处被认出来（§7.15：文档里的数必须能被今天的
     # 文件重算出来）。
@@ -5195,7 +5685,7 @@ def test_the_glass_tokens_reference_counts_are_todays():
         m = re.fullmatch(r"(\d+)\s*处引用", cells[1])
         if m:
             doc[cells[0]] = int(m.group(1))
-    assert set(doc) == {"--bg-card", "--glass-border", "--glass-hi"}, doc
+    assert set(doc) == {"--bg-card", "--glass-border"}, doc
 
     today = {
         token: len(re.findall(rf"var\({token}\)", CSS_NO_COMMENTS)) for token in doc
@@ -5249,6 +5739,21 @@ def test_light_opens_no_new_colour_entrance():
     assert len(hues) == int(
         re.search(r"(\d+)\s*个色相", _doc_line("### 6.1", "个色相")).group(1)
     ), sorted(hues)
+
+    # 逐色相的层数账也是文档里的数，也得有对手（§7.15）。先前只有「12 个色相」这一个
+    # 数被守着，于是 #90 把 5 层顶亮线从 `--warm-hi` 换成纯白之后，「纯白 31 层、
+    # `--warm-hi` 10」在文档里静静地错着，全套 484 条守卫一条都没红。
+    line = _doc_line("### 6.1", "个色相")
+    doc = {
+        "0,0,0": int(re.search(r"纯黑 (\d+) 层", line).group(1)),
+        "255,255,255": int(re.search(r"纯白 (\d+) 层", line).group(1)),
+    }
+    doc.update({
+        f"var({tok})": int(n) for tok, n in re.findall(r"`(--[\w-]+)`\s*(\d+)(?![\d.])", line)
+    })
+    assert doc == {h: len(v) for h, v in hues.items()}, (doc, {h: len(v) for h, v in hues.items()})
+    rest = int(re.search(r"其余 (\d+) 层", line).group(1))
+    assert rest == sum(n for h, n in doc.items() if h not in ("0,0,0", "255,255,255")), rest
 
 
 def _hue_rgb_of_light(colour_text: str) -> colour.Rgb:
@@ -5322,6 +5827,25 @@ def test_the_sign_of_y_is_decided_by_the_light_not_by_the_author():
         (len(top), len(bottom)),
     )
 
+    # 两族的**地板与天花板**也是两个数，而它们原先只在散文里（写着 0.87 / 0.05，实测
+    # 0.8844 / 0.0403，错了六个版本）。上面 `floor[0] > ceiling[0]` 那条断言对这两个
+    # 数字写错免疫——它只比大小。§7.15：一个只出现在人眼里的数，不会被任何断言接住。
+    written = [
+        float(n) for n in _DOC_L_VALUE.findall(_doc_line("### 6.1", "层、底面"))
+    ]
+    assert written == [round(floor[0], 4), round(ceiling[0], 4)], (written, floor, ceiling)
+
+    # 被驳回的那个前提（§9 有它的抄本）：底面这一族最亮的墨比**最亮的底**还亮，所以
+    # 「相对中性灰的方向」这个外部门槛在这套颜色里对每一层都成立，也就什么都没说。
+    lift = colour.luminance(_tier("--bg-lift"))
+    assert ceiling[0] > lift, (ceiling, lift)
+    premise = _doc_line("### 6.1", "相对 50% 中性灰")
+    assert float(_DOC_L_VALUE.search(premise).group(1)) == round(lift, 4), (
+        premise[:80],
+        lift,
+    )
+    assert _by_quantity(f"{round(ceiling[0], 4)}") in _by_quantity(premise), premise[:80]
+
 
 def test_a_drop_shadow_has_only_one_degree_of_freedom():
     """§6.1 判据六：投影的 blur 不是第二个旋钮，它是「浮多高」的第二个读数。
@@ -5365,4 +5889,834 @@ def test_a_drop_shadow_has_only_one_degree_of_freedom():
         doc.groups(),
         (len(drops), len({b for _y, b, _w in drops})),
     )
+
+
+# --- §6.1 判据十：长度的档由比值判 --------------------------------------------
+#
+# 判据六把投影压成一维（blur = 4y）之后，「浮多高」仍有 15 个自由取值；光晕的
+# 「发光半径」是另一本账的 14 个。这两维的档不由 alpha 那套 ΔE 判（判据七：档数
+# 是「色 × 底」发的额度），由**比值**判——而界线的位置是文件自己裂开的：两族全部
+# 27 对相邻比值里，没有一对落在 1.2 与 1.25 之间。≤ 1.2 的 12 对全是「同一句话
+# 写了两遍」（24 与 25、5 与 6、8 与 9、10 与 12……），≥ 1.25 的 15 对全是跨语义
+# 的边界（静止↔hover ×2、呼吸两端 ×1.5、键↔卡↔全屏面板）。心理物理只给得出
+# 锐边长度的 Weber 分数（约 5–10%），软掉的边缘更粗、但说不出「几」——1.25 不是
+# 校出来的，是从那条缝里读出来的。
+
+
+def _doc_ladder(key: str) -> dict[float, int]:
+    """§6.1 判据十那两行梯子：{刻度: 层数}。
+
+    刻度、总层数、分档负载全从文档读，梯子自身的相邻比也不低于判据写下的那个
+    数——与 `k 从文档里读`守的是同一个方向：文档不能单方面漂。
+    """
+
+    line = _doc_line("### 6.1", key)
+    m = re.search(r"：\s*([\d\s·]+?)\s*——\s*(\d+) 层分档\s*([\d\s/]+?)\s*$", line)
+    assert m, f"梯子这行读不出刻度与分档：{line[:80]}"
+    rungs = [float(v) for v in m.group(1).split("·")]
+    loads = [int(v) for v in m.group(3).split("/")]
+    assert len(rungs) == len(loads) and sum(loads) == int(m.group(2)), (rungs, loads)
+
+    floor = float(
+        re.search(r"比值不低于\s*\*\*(\d\.\d+)\*\*", _doc_line("### 6.1", "比值不低于")).group(1)
+    )
+    gaps = [b / a for a, b in zip(rungs, rungs[1:])]
+    assert min(gaps) >= floor, ([f"{g:g}" for g in gaps], floor)
+    return dict(zip(rungs, loads))
+
+
+def test_how_high_it_floats_is_a_ladder_not_a_knob():
+    """§6.1 判据十前一半：投影的 y（浮多高）只许站在浮高梯子的刻度上。
+
+    15 个高度收成 11 档靠的是并入（比值 ≤ 1.2 并入近邻、多数表决）：10→12、
+    14→12、16→18、25→24。blur 跟着 y 走（判据六），于是 blur 的取值数与高度的
+    取值数一起从 15 到 11——那半个对账在判据六自己的守卫里。
+    """
+
+    ladder = _doc_ladder("浮多高的档")
+    seen: dict[float, int] = {}
+    bad = []
+    for ch, where, layer, g in _parsed_light():
+        y, blur, spread = (_px(g[k]) for k in ("y", "blur", "spread"))
+        if not g["inset"] and y != 0 and blur > 0 and spread == 0:
+            seen[abs(y)] = seen.get(abs(y), 0) + 1
+            if abs(y) not in ladder:
+                bad.append(f"{ch} @ {where}  {layer}")
+    assert seen and not bad, (bad or "一把只看投影的尺子今天一层都没读到")
+    assert seen == ladder, (seen, ladder)
+
+
+def test_the_glow_radius_is_a_ladder_not_a_knob():
+    """§6.1 判据十后一半：光晕的 blur（发光半径）只许站在自己的梯子上。
+
+    半径的九档今天全部落在浮高梯子的刻度上（只多一个 50）——这是观察到的事实，
+    不是这条判据的一部分：两维量的不是同一件事（判据二），守卫也各是各的。
+    """
+
+    ladder = _doc_ladder("发光半径的档")
+    seen: dict[float, int] = {}
+    bad = []
+    for ch, where, layer, g in _parsed_light():
+        y, blur, spread = (_px(g[k]) for k in ("y", "blur", "spread"))
+        if not g["inset"] and y == 0 and blur > 0 and spread == 0:
+            seen[blur] = seen.get(blur, 0) + 1
+            if blur not in ladder:
+                bad.append(f"{ch} @ {where}  {layer}")
+    assert seen and not bad, (bad or "一把只看光晕的尺子今天一层都没读到")
+    assert seen == ladder, (seen, ladder)
+
+
+# --- §6.1 判据八：厚度是材料的属性，不是状态的读数 ---------------------------
+#
+# 这条判据的仪器不能建在「谁有厚度线」上，得建在「谁声明了 `box-shadow`」上。
+# `box-shadow` 不叠加，后面那条整条替换前面那条：一个状态重写了 box-shadow 却没写
+# 厚度线，等于让这块玻璃在那个状态薄到 0——和改它的颜色是同一个错，而只看「有厚度线
+# 的宿主」的仪器会把这一整族看成不存在。
+#
+# 「同一块材料」不是一张名单，是一个结构问题：**两条规则能不能同时命中同一个元素**。
+# `.voice-ico-btn` 与 `#inputField:not(.expanded) .voice-ico-btn:not(.recording)` 能
+# （前者是后者去掉限定），`.msg-user .bubble` 与 `.msg-ai .bubble` 不能（一个元素不会
+# 同时在两个祖先里）。先前按「剥掉状态记号后的选择器字符串」认材料的写法漏了 `:not()`
+# 那一族两层，而它漏掉的恰好就是不合格的那两层。剥状态记号用的是全文唯一那把
+# `_STATE_TOKEN`——这一节先前自带一把 `_MATERIAL_STATE`，它缺 15 个今天真在用的名字
+# （`.show` 26 处）又带 2 个 CSS 里根本没有的死名字，v1.39 并掉了。
+
+
+# 一个复合选择器要求的那些「简单选择器」。属性选择器整段留着（`[data-screen="terrain"]`
+# 是一个条件），伪元素单独认：`::before` 是宿主生出来的**另一个盒**，它有自己的厚度线，
+# 和宿主不是同一块材料。不复用 §7.11 的 `_compounds`——那个只抽类名，于是 `.tab` 与
+# `.tab[data-screen="x"]` 在它眼里相等、`div.x` 与 `span.x` 也相等，那是往多认的方向错。
+_MATERIAL_SIMPLE = re.compile(r"\[[^\]]*\]|::[\w-]+|:[\w-]+(?:\([^)]*\))?|[.#][\w-]+|\*|^[\w-]+")
+_MATERIAL_LEGACY_PE = re.compile(r"(?<!:):(before|after|first-line|first-letter|placeholder|selection)\b")
+
+
+def _simple_selectors_of(compound: str) -> frozenset[str]:
+    """一个复合选择器 → 它要求的简单选择器集合。读不出的字符留声，不静默丢。"""
+
+    rest, got = _MATERIAL_LEGACY_PE.sub(r"::\1", compound), []
+    while rest:
+        m = _MATERIAL_SIMPLE.search(rest)
+        if not m:
+            got.append("??" + rest)
+            break
+        if m.start():
+            got.append("??" + rest[: m.start()])
+        got.append(m.group(0))
+        rest = rest[m.end():]
+    return frozenset(got)
+
+
+def _compound_covers(general: str, specific: str) -> bool:
+    """凡是命中 specific 的元素，一定也命中 general 吗（同一层，且画的是同一个盒）。"""
+
+    g, s = (_simple_selectors_of(c) for c in (general, specific))
+    return {x for x in g if x.startswith("::")} == {x for x in s if x.startswith("::")} and g <= s
+
+
+_COMBINATOR = re.compile(r"\s*([>+~])\s*")
+
+
+def _links(sel: str) -> list[tuple[str, str]]:
+    """选择器 → [(与左邻的关系, 复合选择器)]，第一段的关系是空串。
+
+    组合子必须自己成一层。先前靠 `sel.split()` 按空白切层，而 `>` / `+` / `~` 不是空白，
+    于是 `.dv-card>.gi-unavailable` 整条算成一层，`.dv-card` 被判成覆盖它——可它画的是
+    `.gi-unavailable` 那个盒，**主体换了**。
+    """
+
+    got: list[tuple[str, str]] = []
+    comb = ""
+    for tok in _COMBINATOR.sub(r" \1 ", sel).split():
+        if tok in ">+~":
+            comb = tok
+        else:
+            got.append((comb or " ", _STATE_TOKEN.sub("", tok)))
+            comb = ""
+    if got:
+        got[0] = ("", got[0][1])
+    return got
+
+
+def _covers(general: str, specific: str) -> bool:
+    """凡是命中 specific 的元素，一定也命中 general 吗（**有方向**，整条选择器）。
+
+    祖先那一层只认**能证明是祖先**的：`+` / `~` 左边那一段是主体的兄弟，不是祖先——但
+    兄弟与主体同父，所以跳过那一段继续往左走仍然是共同祖先，于是 `.x` 覆盖 `.w + .x`
+    （主体同为那个 `.x` 元素，兄弟那一段只是多加一个条件）。
+    一般那条自己用了强组合子时只认结构完全一致的：`.a .b` 覆盖 `.a>.b`，反过来不行。
+
+    先前这里还有第三个参数 `strip`，让调用方指定用哪把「状态记号」尺子。**那个参数就是
+    分叉的入口**：v1.37 一边写下「同一个概念不许留两把尺子」，一边留着它，于是那个概念在
+    四个地方长成了四个样子而没有一条断言会红（v1.39 并成一把，见 `_STATE_TOKEN`）。
+    """
+
+    lg, ls = _links(general), _links(specific)
+    if not lg or not ls or not _compound_covers(lg[-1][1], ls[-1][1]):
+        return False
+    if any(c in ">+~" for c, _ in lg[1:]):
+        return len(lg) == len(ls) and all(
+            a[0] == b[0] and _compound_covers(a[1], b[1]) for a, b in zip(lg, ls)
+        )
+    walk = iter([ls[i - 1][1] for i in range(len(ls) - 1, 0, -1) if ls[i][0] in (" ", ">")])
+    return all(any(_compound_covers(x, y) for y in walk) for _rel, x in reversed(lg[:-1]))
+
+
+def _same_material(a: str, b: str) -> bool:
+    """a、b 两条规则说的是同一块材料吗（文本上的近似）。
+
+    判据是**一方处处更一般**：凡是命中特化那条的元素，一定也命中一般那条 ⇒ 两条规则
+    一定同时命中同一个元素。逐层用「简单选择器集合包含」比而不是字符串相等——
+    `.tab.active svg` 与 `.tab[data-screen="terrain"].active svg` 是同一块材料，字符串
+    相等看不出来（#104：那一版**两层都**用 `==`，不只是祖先那一层）。
+
+    这里取**两个方向的并**，而 §7.23 判据一/二取的是有方向的那一个：这条问的是「两条
+    规则能不能同时命中同一个元素」，谁更特化不影响答案；那条问的是「这条状态脚下压着
+    的是哪条基线」，反着来就不是同一句话（#105）。
+
+    不取「有可能同时命中」（`.a` 与 `.b` 可以长在同一个元素上）：那不是同一块材料的两个
+    状态，而同一组的成员会被要求读数相等，所以多认在这里造的是**误报**，不是多比一对。
+    方向也必须整条链一致——一边在目标上更一般、另一边在祖先上更一般，两条规则并不保证
+    同时命中。
+    """
+
+    return _covers(a, b) or _covers(b, a)
+
+
+def test_the_same_material_ruler_reads_a_specialisation_as_one_material():
+    """`_same_material` 这把尺子自己的对手。
+
+    判据八的分组全靠它，而它在今天的 `app.html` 上只多认出**一对**（`.we-ops-led` 与
+    `.we-ops-led.warn`，两边都没有厚度线）——**今天的绿色证明不了它读对了什么**。所以
+    这八对是构造的：头两对是 #104 修掉的洞（那一版两层都用字符串相等，看不出属性限定
+    是一种特化），中间三对是不许多认的方向（互斥的祖先、伪元素是另一个盒），接着两对是
+    它本来就得认出来的，末一对盯的是方向必须整条链一致（见那一行自己的注释）。
+    """
+
+    cases = [
+        (True, ".tab", '.tab[data-screen="terrain"]'),
+        (True, ".tab.active svg", '.tab[data-screen="terrain"].active svg'),
+        (False, ".msg-user .bubble", ".msg-ai .bubble"),
+        (False, ".comp-echo", ".comp-echo::before"),
+        (False, ".comp-echo::before", ".comp-echo::after"),
+        (True, "#inputField:not(.expanded) .voice-ico-btn:not(.recording)", ".voice-ico-btn"),
+        (True, ".x .y", ".y"),
+        # 第八对盯的是「方向整链一致」，前七对都盯不住它：这两条一个在目标上更一般、
+        # 一个在祖先上更一般，于是谁都不保证另一个也命中（`.wrap .btn.extra` 里的按钮
+        # 可以不在 `.wrap.extra` 里）。只按「每一层各自任一方向」比会把它认成一对。
+        (False, ".wrap.extra .btn", ".wrap .btn.extra"),
+        # 第九对是 #105：按空白切层时 `>` 不成一层，于是 `.dv-card` 与它认成一块材料
+        # ——可后者画的是 `.gi-unavailable` 那个盒，两条规则命中的根本不是同一个元素。
+        (False, ".dv-card", ".dv-card>.gi-unavailable"),
+    ]
+    wrong = [(a, b, want) for want, a, b in cases if _same_material(a, b) is not want]
+    assert not wrong, wrong
+
+    # `_same_material` 是对称的，它盯不住方向；而 §7.23 判据一/二靠的正是方向。
+    # 这四对里有三对是我第一次写原型时期望写错的地方（尺子读对了）：`.a .b` 覆盖
+    # `.a>.b`（凡命中子代的都命中后代），反过来不行；`.x` 覆盖 `.w + .x`（主体是同一个
+    # `.x`，兄弟那一段只是多一个条件），反过来不行。
+    directed = [
+        (True, ".a .b", ".a>.b"),
+        (False, ".a>.b", ".a .b"),
+        (True, ".x", ".w + .x"),
+        (False, ".w + .x", ".x"),
+        # 兄弟那一段不是祖先：`.w + .x` 里的 `.w` 是 `.x` 的哥哥，不是它的父辈。
+        (False, ".w .x", ".w + .x"),
+        # 但兄弟与主体同父，所以跳过那一段继续往左走，`.p` 仍然是共同祖先。
+        (True, ".p .x", ".p .w + .x"),
+    ]
+    off = [(g, s, want) for want, g, s in directed if _covers(g, s) is not want]
+    assert not off, off
+
+
+def _thickness_lines(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """一条 box-shadow 的值 → (顶面那几条线的颜色, 底面那几条线的颜色)。"""
+
+    top, bot = [], []
+    for layer in _split_top(value):
+        m = _LIGHT_SHAPE.match(layer)
+        if not m:
+            assert layer.strip() == "none", layer   # 读不出的层不许静默跳过
+            continue
+        y, blur, spread = _px(m["y"]), _px(m["blur"]), _px(m["spread"])
+        if m["inset"] and y != 0 and blur == 0 and spread == 0:
+            (top if y > 0 else bot).append(m["colour"].strip())
+    return tuple(top), tuple(bot)
+
+
+def test_thickness_is_a_property_of_the_material_not_a_reading_of_the_state():
+    """§6.1 判据八：同一块材料的厚度线，在它所有状态下逐字节相同。
+
+    顶面 35 层的**几何**是 `y=+1px`，零例外、跨状态一层没动过。而先前它的**颜色**
+    在 7 组材料、13 层上跨状态在动（`.voice-ico-btn` 白 .40 → `:hover` .50 →
+    `.recording` 暖 .35 → `:not(.expanded)` 白 .45）。同一条线的两个读数互相矛盾，
+    而几何那一个已经封闭。
+
+    「这一状态下它变亮了」在物理上只有两个指称：材料变厚（那 y 该变，可 y 没变），
+    或者光变强（那所有材料的顶面都该变亮，可只有这一个元素变）。两个都不成立，所以
+    那 13 层说的是一句没有指称的话——「它抬起来了」早已由投影说（判据六）。
+
+    关键帧不是一块独立的材料，是宿主的时间维度，所以它折进宿主所在的那一组比。
+    """
+
+    shadow: dict[str, str] = {}
+    animated: dict[str, list[str]] = {}
+    for stack, decl in _declarations_everywhere():
+        where = " > ".join(stack)
+        prop, _, val = decl.partition(":")
+        if prop.strip() == "box-shadow":
+            shadow[where] = val
+        elif prop.strip() in ("animation", "animation-name"):
+            for name in re.findall(r"[A-Za-z][\w-]*", val):
+                animated.setdefault(name, []).append(where)
+
+    # 关键帧 → 它的宿主。接不上宿主的关键帧会被这一组比较整个漏掉，所以先拦住。
+    hosts_of: dict[str, list[str]] = {}
+    for where in shadow:
+        if not where.startswith("@keyframes"):
+            continue
+        name = where.split(" > ")[0].removeprefix("@keyframes").strip()
+        hosts_of[where] = [h for h in animated.get(name, []) if not h.startswith("@")]
+    assert all(hosts_of.values()), [w for w, h in hosts_of.items() if not h]
+
+    # 分组。`@media` 里的规则用它内层的选择器参加分组——那是同一块材料在另一个视口下。
+    def selector_of(where: str) -> str:
+        return where.split(" > ")[-1]
+
+    named = {w for w in shadow if not w.startswith("@")} | {
+        h for hs in hosts_of.values() for h in hs
+    }
+    groups: list[list[str]] = []
+    for where in sorted(named) + sorted(w for w in shadow if w.startswith("@media")):
+        for g in groups:
+            if any(_same_material(selector_of(where), selector_of(o)) for o in g):
+                g.append(where)
+                break
+        else:
+            groups.append([where])
+
+    bad, compared = [], []
+    for g in groups:
+        members = [w for w in g if w in shadow]
+        members += [k for k, hs in hosts_of.items() if any(h in g for h in hs)]
+        reading = {w: _thickness_lines(shadow[w]) for w in members}
+        if not any(any(v) for v in reading.values()):
+            continue
+        if len(members) > 1:
+            compared.append(members)
+        for face, i in (("顶面", 0), ("底面", 1)):
+            seen = {v[i] for v in reading.values()}
+            if len(seen) > 1:
+                bad.append(
+                    f"{face}的厚度线跨状态动了：" + "；".join(
+                        f"{w} → {' '.join(reading[w][i]) or '（这个状态整条不见了）'}"
+                        for w in members
+                    )
+                )
+    assert not bad, bad
+
+    # 这条守卫最危险的失败方式不是误报，是仪器一对都没认出来然后报绿。所以要两个
+    # 正对照：它数出来的厚度线总层数必须等于判据二那张位置表里的 55，而能跨状态
+    # 比较的材料组数必须等于文档写下的数（§7.15）。
+    census = sum(
+        1
+        for _ch, _where, _layer, g in _parsed_light()
+        if g["inset"] and _px(g["y"]) != 0 and _px(g["blur"]) == 0 and _px(g["spread"]) == 0
+    )
+    counted = sum(
+        len(t) + len(b) for w in shadow for t, b in [_thickness_lines(shadow[w])]
+    )
+    assert counted == census, (counted, census)
+
+    doc = re.search(
+        r"(\d+)\s*组材料能跨状态比较[^0-9]*(\d+)\s*条",
+        _doc_line("### 6.1", "组材料能跨状态比较"),
+    )
+    today = (len(compared), sum(len(m) for m in compared))
+    assert (int(doc.group(1)), int(doc.group(2))) == today, (doc.groups(), today, compared)
+
+
+def _lifted_layers(value: str) -> list[str]:
+    """一条 `box-shadow` 里落在盒子**外面**的那些层——「它离地」的唯一说法。
+
+    名字不叫 `_drop_shadows`：那个名字在这个文件里已经有主（`filter` 里的
+    `drop-shadow(...)`），而重名的模块级赋值 Python 一声不响——判据八那一轮的
+    `_STATE_MARK` 就是这么把 §7.16 的尺子悄悄换掉的。
+    """
+
+    out = []
+    for layer in _split_top(value):
+        m = _LIGHT_SHAPE.match(layer)
+        if not m:
+            assert layer.strip() == "none", layer   # 读不出的层不许静默跳过
+            continue
+        if not m["inset"]:
+            out.append(layer.strip())
+    return out
+
+
+def test_the_lower_thickness_line_is_a_consequence_of_lying_above_the_surface():
+    """§6.1 判据九：下缘那道暗线是「它离地」与「上缘受光」的推论，不是可选的装饰。
+
+    #90 留下的问法是「厚度线必须成对吗」，而那个问法自带的答案——贴屏幕边缘的下缘不在
+    画面里，所以只有顶面的那些是合法例外——量一遍就倒了：15 条只有顶面的里，只有
+    `.lap-card` 与 `.tabbar` 是 `bottom:0`，其余 13 条的下缘都在画面里（`.memo-fab` 是
+    `bottom:150px` 的圆键、`.we-avatar` 84px、`.dv-live-mode` 38px 药丸）。第二个假设
+    （黑暗边压在深底上本来看不见，所以只有浅底才画）也倒了：两组底的明度区间完全重叠，
+    `.lap-btn.send` 合成出 0.076、`.memo-fab` 0.072，都比画了暗边的 `.comp-state`
+    0.015、`.voice-ico-btn` 0.020 更亮。
+
+    今天零反例的那条线是**离地**：20 条顶底俱全的全部带外投影，而 4 条既没有外投影也
+    没有下缘暗线的，恰好是两块贴屏幕边缘的面板（`.lap-card` / `.tabbar`）与两个嵌进面
+    里的凹槽（`.lap-textarea` / `.we-choice.on`）——没有一个是浮在面上的板。于是判据按
+    几何写：**下缘那道暗线一旦出现，同一条声明里就必须既有外投影（它离地），又有上缘
+    那条受光线（判据一说光在正上方，上缘先受光，下缘才有背光可言）。**
+
+    反方向今天不成立，也不写进判据：11 条声明离了地却只画上缘。它们该不该补齐，取决于
+    「这道暗线有多厚是几档」与「它相对自己宿主的底是加光还是减光」，两笔都还没算。
+    """
+
+    bad, every, both, top_only, bot_only, lifted = [], [], [], [], [], []
+    for stack, decl in _declarations_everywhere():
+        where = " > ".join(stack)
+        prop, _, val = decl.partition(":")
+        if prop.strip() != "box-shadow":
+            continue
+        every.append(val)
+        top, bot = _thickness_lines(val)
+        if not (top or bot):
+            continue
+        drop = _lifted_layers(val)
+        if bot and not top:
+            bad.append(f"{where}：只画了下缘那道暗线，而上缘没有受光线")
+        if bot and not drop:
+            bad.append(f"{where}：贴在面上的一层膜画了下缘暗线——它没有离地")
+        if top and bot:
+            both.append(where)
+        elif top:
+            top_only.append(where)
+            if drop:
+                lifted.append(where)
+        else:
+            bot_only.append(where)
+    assert not bad, bad
+
+    # 两个正对照。这条守卫最危险的失败方式同样不是误报，是仪器一层外投影都没认出来
+    # 然后报绿——那时上面那个 `bad` 会是空的，而空集也能过。
+    census = sum(
+        1 for ch, _w, _l, g in _parsed_light() if ch == "box-shadow" and not g["inset"]
+    )
+    assert sum(len(_lifted_layers(v)) for v in every) == census, census
+
+    # 「只有底面 0 条」这一项的承重在上面那条禁令上，不在这个数上：走到这里它必然是 0。
+    # 留着它是为了让文档里那个 0 也是数出来的，而不是我写在句子里的一个字面量（v1.35）。
+    line = _doc_line("### 6.1", "条顶底俱全")
+    today = {
+        "条带厚度线": len(both) + len(top_only) + len(bot_only),
+        "条顶底俱全": len(both),
+        "条只有顶面": len(top_only),
+        "条只有底面": len(bot_only),
+        "条也离地": len(lifted),
+        "条贴着": len(top_only) - len(lifted),
+    }
+
+    def written(label: str) -> int:
+        # 每个数各自绑住自己后面那几个字，不靠它们在句子里的先后——一条按顺序读的
+        # 正则，改一次措辞就会静静地把两个数读反。
+        m = re.search(rf"(\d+)\D{{0,4}}{label}", line)
+        assert m, (label, line)
+        return int(m.group(1))
+
+    assert {k: written(k) for k in today} == today, ({k: written(k) for k in today}, today)
+
+
+# --- §6.1 判据七：「档」不是 alpha 的属性 -----------------------------------
+#
+# §7.13 那把七档梯子是**白压在地色上**算出来的价钱。把同一把梯子换成黑，相邻档
+# 大面积掉到可辨阈之下——也就是说 `--o-N` 这个名字承诺的「一档」，只在白上成立。
+# 光有 64 层是黑的，所以「把光的 alpha 贴上七档」这个最自然的动作是错的，而在这
+# 一轮之前没有任何东西反对它。
+
+_LIGHT_ALPHA_HUES = (("白", colour.WHITE), ("黑", colour.BLACK))
+
+
+def _rung_gaps(base: tuple[int, int, int], hue: colour.Rgb) -> list[float]:
+    rungs = [colour.over(hue, base, a) for a in _steps()]
+    return [colour.delta_e(rungs[i], rungs[i + 1]) for i in range(6)]
+
+
+def test_the_seven_rungs_are_a_white_price():
+    """§6.1 判据七：七档是「白」的价钱，换成黑就不是七档。
+
+    覆盖率取 1——也就是把每一层光都当成一片满覆盖的纱来算，这是对梯子**最有利**
+    的极限（真实的一层投影在宿主边缘处的覆盖率由判据六定死，不到 0.7，算出来的档
+    距只会更小）。取这个极限是为了让结论不依赖任何模糊模型：即使在最有利的假设下，
+    黑那两行也已经塌了。
+    """
+
+    # 按结构认行，不按第一列的名字认：§6.1 里另有一张四格的位置表，而地色的名字
+    # 在这一节里出现在好几处散文里。「九格、第二格是白或黑」只有这张表满足。
+    rows = [r for r in _doc_rows("### 6.1") if len(r) == 9 and r[1] in ("白", "黑")]
+    assert len(rows) == 4, f"判据七那张表应有 4 行，读到 {len(rows)}"
+
+    for base_name, hue_name, *cells in rows:
+        hue = dict(_LIGHT_ALPHA_HUES)[hue_name]
+        gaps = _rung_gaps(_tier(base_name), hue)
+        under = sum(1 for g in gaps if g < colour.JND)
+        want = [f"{g:.2f}" for g in gaps] + [f"{under}/6"]
+        assert [_by_quantity(c) for c in cells] == [_by_quantity(w) for w in want], (
+            f"{base_name} {hue_name} 该写 {want}，文档写 {cells}"
+        )
+
+    # 断言这张表说的那件事，而不只是「表里的数没漂」：白全过，黑几乎全塌。
+    for base_name in ("--bg-lift", "--bg-deep"):
+        base = _tier(base_name)
+        assert all(g >= colour.JND for g in _rung_gaps(base, colour.WHITE)), base_name
+        assert sum(1 for g in _rung_gaps(base, colour.BLACK) if g < colour.JND) >= 5, base_name
+
+
+def test_a_whole_alpha_channel_is_worth_less_in_black():
+    """判据七的来处：黑在这块地上，一整条 alpha 通道装不下七档。
+
+    白从 α=0 走到 α=1 跨过几十个可辨阈，黑只跨过几个——因为这个 app 的地色本来就
+    是近黑，黑纱压上去几乎无处可去。**档数不是设计者能定的，是「色 × 底」发的额度。**
+    """
+
+    line = _doc_line("### 6.1", "一整条")
+    nums = re.findall(r"\*\*(?:ΔE )?([\d.]+)", line)
+    assert len(nums) == 6, f"那句话该有 6 个粗体数，读到 {nums}"
+
+    def span(hue: colour.Rgb, base_name: str) -> float:
+        base = _tier(base_name)
+        return colour.delta_e(base, colour.over(hue, base, 1.0))
+
+    white_lift = span(colour.WHITE, "--bg-lift")
+    black_lift = span(colour.BLACK, "--bg-lift")
+    black_deep = span(colour.BLACK, "--bg-deep")
+    want = [
+        f"{white_lift:.2f}",
+        str(int(white_lift / colour.JND)),
+        f"{black_lift:.2f}",
+        f"{black_deep:.2f}",
+        str(int(black_lift / colour.JND)),
+        str(int(black_deep / colour.JND)),
+    ]
+    assert nums == want, (nums, want)
+
+    # 这句话说的那件事：黑的额度比白小一个数量级。
+    assert black_lift < white_lift / 5, (black_lift, white_lift)
+
+
+def test_the_black_drop_shadows_were_never_twenty_steps():
+    """判据七判出来的第一笔账：黑投影的 20 个值两两都分不开。
+
+    这条守卫钉的不是「该收成几档」——那要浏览器逐层量每一层影子真正落在什么底上
+    （地色 / 玻璃卡 / 照片，三个答案），已登记成新任务。它钉的是**今天这 20 个值
+    彼此之间一对都过不了可辨阈**这件事：一个数写了 45 遍，看起来像 20 档。
+    """
+
+    alphas = sorted(
+        {
+            _alpha_of((g["colour"] or "").strip())
+            for _ch, _where, _layer, g in _parsed_light()
+            if not g["inset"]
+            and _px(g["y"]) != 0
+            and _px(g["blur"]) > 0
+            and _px(g["spread"]) == 0
+            and (g["colour"] or "").strip().startswith("rgba(0,0,0")
+        }
+    )
+    layers = [
+        1
+        for _ch, _where, _layer, g in _parsed_light()
+        if not g["inset"]
+        and _px(g["y"]) != 0
+        and _px(g["blur"]) > 0
+        and _px(g["spread"]) == 0
+        and (g["colour"] or "").strip().startswith("rgba(0,0,0")
+    ]
+
+    line = _doc_line("### 6.1", "两两之间")
+    nums = re.findall(r"\*\*([\d.]+)", line)
+    assert len(nums) == 5, f"那句话该有 5 个粗体数，读到 {nums}"
+
+    spans = []
+    for base_name in ("--bg-lift", "--bg-deep"):
+        base = _tier(base_name)
+        pairs = [
+            colour.delta_e(
+                colour.over(colour.BLACK, base, alphas[i]),
+                colour.over(colour.BLACK, base, alphas[i + 1]),
+            )
+            for i in range(len(alphas) - 1)
+        ]
+        assert all(g < colour.JND for g in pairs), (base_name, [round(g, 2) for g in pairs])
+        spans.append(
+            colour.delta_e(
+                colour.over(colour.BLACK, base, alphas[0]),
+                colour.over(colour.BLACK, base, alphas[-1]),
+            )
+        )
+
+    want = [str(len(layers)), str(len(alphas)), str(len(alphas) - 1), f"{spans[0]:.2f}", f"{spans[1]:.2f}"]
+    assert nums == want, (nums, want)
+
+
+def test_no_layer_of_light_walks_the_wall_and_line_ladder():
+    """判据七的禁令：一层光的 alpha 不许写 `var(--o-N)`。
+
+    今天 0 层写了它，所以这条断言本身守着空气——空气那一半由下面的正对照兜住：
+    这把仪器必须在面与线上真的读到梯子，否则「光上没有」和「我看不见梯子」是同一
+    个值。正对照钉的是「仪器还能看见梯子」，不是今天恰好存在的某一处。
+    """
+
+    bad = [
+        f"{ch} @ {where}  {layer}"
+        for ch, where, layer, g in _parsed_light()
+        if re.search(r"var\(--o-\d\)", g["colour"] or "")
+    ]
+    assert not bad, bad
+
+    on_walls = [
+        decl
+        for _stack, decl in _declarations_everywhere()
+        if re.match(r"(background|border|outline)", decl) and "var(--o-" in decl
+    ]
+    assert on_walls, "仪器在面与线上一处梯子都没读到，上面那条断言不算数"
+
+
+# --- §7.15 原件与抄本：§9 / §10 里的每一个数都必须指得准它的家 ------------------
+
+# 摘掉**名字**再数量：节号、版本号、WCAG 条款号、验收行号都是标识符，不是测量值。
+# 不列量词白名单——手写一张「处条层个次」的单子，本身就是 §9 禁的那个病（只摘活着
+# 的那一副面具）：它会漏掉 `1.08:1`、`42%`、`1800ms`、`ΔE 5.80`、`0.19px`。
+_DOC_NAME = re.compile(
+    r"§\s*\d+(?:\.\d+)?|v\d+\.\d+|WCAG\s*[\d.]+|"
+    r"\b(?:1\.4\.11|1\.4\.3|2\.4\.7|2\.5\.8|4\.1\.2)\b"
+)
+_DOC_ROWID = re.compile(r"^\|\s*\d+[a-z]*\s*\|")
+# 省略前导零那一支必须自己写出来：`(?<![\w.])\d+…` 在 `.04` 上只能从 `0` 起匹配，而
+# `0` 前面正是那个点号，于是这个量整个**读不到**——它不是「拼法没归一」，是漏报。
+# 两节里今天有 51 处这么写（§9 30 + §10 21），一把读不到它们的尺子报出来的是合格。
+_DOC_NUM = re.compile(r"(?<![\w.])((?:\d+(?:\.\d+)?|\.\d+)(?:e-?\d+)?)(?![\w.])")
+
+
+def _doc_numbers(text: str) -> set[float]:
+    """按**值**收数，不按拼法。`0.08` ≡ `.08`、`5` ≡ `5.0`——两副面具一起摘。"""
+
+    return {float(m.group(1)) for m in _DOC_NUM.finditer(_DOC_NAME.sub(" ", text))}
+
+
+def _doc_chapter(prefix: str) -> str:
+    """按 §号取正文：`7.23` → `### 7.23 …`，`9` → `## 9. 禁止清单` 连同全部子节。
+
+    标题写的是 `## 9. 禁止清单`，所以那个点号必须允许——不允许它，整章引用一律
+    取到空串，于是点名它们的每一行都会被误判成「指错门」。
+    """
+
+    lines = DOC.splitlines()
+    pat = re.compile(r"^#{2,5} " + re.escape(prefix) + r"\.? (?!\d)")
+    i = next((k for k, ln in enumerate(lines) if pat.match(ln)), None)
+    assert i is not None, f"文档里找不到 §{prefix}"
+    depth = len(lines[i]) - len(lines[i].lstrip("#"))
+    j = next(
+        (k for k in range(i + 1, len(lines)) if re.match(r"#{1,%d} " % depth, lines[k])),
+        len(lines),
+    )
+    return "\n".join(lines[i + 1 : j])
+
+
+def test_the_two_checklists_hold_no_number_of_their_own():
+    """§9 与 §10 里不许有原件，只许有抄本：每个数都要在它点名的那一节里查得到。
+
+    「家在守卫文件」这一档很宽（六千行里的数几乎什么都撞得上），它被**三个数一起
+    钉住**这件事收住：一个数从「点名的那一节」烂到只剩「守卫文件里碰巧有」，两个
+    计数会同时移动，这条断言就红。所以宽的那一档不是一个逃逸口，是一个记账口。
+
+    `silent` 那条断言今天守着空气（两处已补上出处），但它不需要正对照：认出处用的
+    是同一个 `§` 正则，它一旦瞎掉，527 个数会一起掉进 `silent`，红得比谁都响。
+    """
+
+    guards = "\n".join(
+        (Path(__file__).resolve().parent / f).read_text(encoding="utf-8")
+        for f in ("test_aesthetic_baseline.py", "colour.py", "test_colour_ruler.py")
+    )
+    of_the_tool = _doc_numbers(guards)
+
+    owned = tool = 0
+    orphan, silent = [], []
+    for heading, prefix in (("## 9.", "- "), ("## 10.", "| ")):
+        for ln in _doc_section(heading).splitlines():
+            if not ln.startswith(prefix) or set(ln) <= set("|-: "):
+                continue
+            here = _doc_numbers(_DOC_ROWID.sub(" ", ln))
+            if not here:
+                continue
+            refs = list(dict.fromkeys(re.findall(r"§\s*(\d+(?:\.\d+)?)", ln)))
+            if not refs:
+                # 不写出处是这条判据唯一的逃逸口：一个抄本必须说出它抄的是哪一份。
+                silent.append((sorted(here), re.sub(r"\s+", " ", ln)[:90]))
+                continue
+            home = set().union(*(_doc_numbers(_doc_chapter(r)) for r in refs))
+            for n in sorted(here):
+                if n in home:
+                    owned += 1
+                elif n in of_the_tool:
+                    tool += 1
+                else:
+                    orphan.append((n, "§" + "/§".join(refs), re.sub(r"\s+", " ", ln)[:90]))
+    assert not orphan, orphan
+    assert not silent, silent
+
+    counted = _doc_line("### 7.15", "个的家在它自己点名的那一节")
+    written = [int(n) for n in _DOC_BOLD_NUM.findall(counted)]
+    assert written == [owned + tool, owned, tool], (written, owned, tool)
+
+
+_RE_CALLS = frozenset(
+    ("compile", "search", "match", "fullmatch", "findall", "finditer", "sub", "subn", "split")
+)
+
+# 同一个量的三种合法拼法。三条都要在，因为它们各自暴露不同的偏食：只补前导零看不见
+# 「只认 `0.NN`、`.NN` 一律漏掉」的尺子，只省前导零看不见反过来的那一把。
+_RESPELLINGS = (
+    ("补前导零", r"(?<![\w.])(\.\d)", r"0\1"),
+    ("省前导零", r"(?<![\w.])0(\.\d)", r"\1"),
+    ("补一位尾零", r"(?<![\w.])(\d*\.\d+)(?![\d.])", r"\g<1>0"),
+)
+
+
+def _numeric_rulers() -> dict[str, list[int]]:
+    """本文件里所有写成字面量、并且认数字的正则：正则原文 → 它出现在哪几行。"""
+
+    rulers: dict[str, list[int]] = {}
+    for node in ast.walk(ast.parse(Path(__file__).resolve().read_text(encoding="utf-8"))):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in _RE_CALLS or not node.args:
+            continue
+        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "re"):
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            continue
+        if re.search(r"\\d|\[0-9", first.value):
+            rulers.setdefault(first.value, []).append(node.lineno)
+    return rulers
+
+
+def test_no_ruler_changes_its_reading_when_a_quantity_is_spelt_the_other_legal_way():
+    """一个量换一种合法拼法，这个文件里每一把认数的尺子读数都不许动。
+
+    这一条不写成「换完之后测试不许红」，因为那样问是**朝一个方向瞎的**：一把过严的
+    尺子会红得很响，而**真漏报的那一把恰恰保持绿**——它本来就没在看那些声明，少看见
+    一处不会让任何断言不高兴。所以判据只能落在读数上：`len(findall)` 变了，就是这把
+    尺子把「一个数」和「一个数的某一种写法」当成了一回事。
+
+    这个病在这个文件里已经有三次病历：`TIME` 曾把 `.25s` 读成 25s（见开头那条注释）；
+    §7.15 的计数曾读不到 `.04`；这一轮又抓到三处（§7.11 的 8 行、四条锚的 2 行、§6.1
+    色相行把 `0.NN` 的 `0` 当成层数）。前两次都是改完一处就走，所以第三次还会来。
+
+    代价大约 7s（尺子 × 两份文本 × 三种改写），是这个套件里最贵的一条。买的是「以后
+    新加的认数尺子自动被查一遍」——这条法的对手是明天写的正则，不是今天的。
+    """
+
+    rulers = _numeric_rulers()
+    assert len(rulers) >= 60, f"收集器该抓到几十把认数的尺子，只抓到 {len(rulers)}"
+
+    moved = []
+    for label, text in (("app.html", APP_HTML), ("文档", DOC)):
+        for name, pattern, repl in _RESPELLINGS:
+            other = re.sub(pattern, repl, text)
+            assert other != text, f"{label} 里没有一处能{name}，这条改写在空跑"
+            for ruler, lines in rulers.items():
+                rx = re.compile(ruler, re.S)
+                before, after = len(rx.findall(text)), len(rx.findall(other))
+                if before != after:
+                    moved.append((lines, label, name, before, after, ruler[:80]))
+    assert not moved, moved
+
+
+# 守字形的十三条 + 那张抄本表。动态守卫对它们跑「改写后的世界」：文件里凡是在拿
+# 字面量比文字的断言，都要能通过 _by_quantity 或声明过的读法在另一种拼法下存活。
+_GLYPH_GUARDED = (
+    "recording_is_one_state_with_one_rhythm or "
+    "no_hand_written_bezier_survives_outside_the_one_declaration or "
+    "the_bounce_curve_stays_dead_until_something_is_lifted_out or "
+    "reduced_motion_stops_everything_and_lands_on_the_end_state or "
+    "the_companion_state_is_carried_by_rhythm_not_hue or "
+    "the_only_important_left_is_the_one_that_cannot_win_by_specificity or "
+    "the_ladder_has_exactly_seven_rungs_with_the_documented_values or "
+    "the_opacity_knob_table_recomputes_cell_by_cell or "
+    "the_ladder_is_only_a_ladder_below_a_floor_that_can_be_solved_for or "
+    "the_fifth_veil_is_the_last_rung_the_ladder_survives or "
+    "the_paper_is_past_the_gate_and_that_is_exactly_why_it_has_its_own_ink or "
+    "the_sign_of_y_is_decided_by_the_light_not_by_the_author or "
+    "the_seven_rungs_are_a_white_price or "
+    "the_waiting_is_one_material_with_one_definition"
+)
+
+
+def _run_only(k_expression: str) -> set[str]:
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_aesthetic_baseline.py", "-k", k_expression,
+         "-p", "no:cacheprovider", "--tb=no", "-q"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return set(re.findall(r"^FAILED [^:]+::(\w+)", proc.stdout, re.M))
+
+
+def test_the_by_quantity_guards_stay_green_under_every_legal_spelling():
+    """把一个文件整份按一种合法拼法重写，这十四处断言不许跟着红。
+
+    判据（§7.15）：十三条按量比的断言守的是量，`0.04` 换成 `.04` 它们必须全绿；
+    抄本表那一条（the_waiting_is_one_material_with_one_definition）的判据就是**逐字**，
+    它必须在**只改一侧**时红：app 写 `.10`、文档写 `0.10`，省掉任何一侧的前导零，两侧
+    就不再逐字相同。两侧**一起**省零会把它们重新对齐，抄本反而绿——所以四个方向
+    （app 补零 / app 省零 / 文档补零 / 文档省零）分开跑，红集写在表里而不是推导。
+
+    只改两种拼法而不跑第三种（补一位尾零）：那一种会同时改掉 Python 侧 `repr(float)`
+    的规范化输出（`0.4` → `0.40` 之类），把断言本身也改写掉。它属于 #117。
+    """
+
+    app = Path(__file__).resolve().parents[2] / "app.html"
+    doc = Path(__file__).resolve().parents[2] / "内在地形-美学基线-v1.md"
+    copy = {"test_the_waiting_is_one_material_with_one_definition"}
+    cases = (
+        (app, "补前导零", r"(?<![\w.])(\.\d)", r"0\1", set()),
+        (app, "省前导零", r"(?<![\w.])0(\.\d)", r"\1", copy),
+        (doc, "补前导零", r"(?<![\w.])(\.\d)", r"0\1", set()),
+        (doc, "省前导零", r"(?<![\w.])0(\.\d)", r"\1", copy),
+    )
+    for target, label, pattern, repl, expect_red in cases:
+        raw = target.read_bytes()
+        try:
+            target.write_bytes(re.sub(pattern, repl, raw.decode("utf-8")).encode("utf-8"))
+            failed = _run_only(_GLYPH_GUARDED)
+        finally:
+            target.write_bytes(raw)
+        assert hashlib.sha1(target.read_bytes()).digest() == hashlib.sha1(raw).digest(), (
+            f"{label} 后还原失败：{target}"
+        )
+        assert failed == expect_red, (target.name, label, failed, expect_red)
+
+
+def test_no_numeric_ruler_is_written_twice():
+    """一把认数的尺子只许有一份定义（§7.23：一个概念只有一把尺子）。
+
+    v1.40 的普查发现 6 组 20 处原文重复——同一个正则抄在好几个测试里，改一处漏
+    六处，而两份抄本的行为一起变才算改对（§7.15 判据（一）的记账口拦不住它：
+    抄本们一起错的时候没有任何读数会动）。这六组已提成模块级 `re.compile` 常量；
+    这一条守「第二遍不再出现」：收集器里任何原文出现两次即红。
+
+    盲区如实记：收集器只收「第一个参数是字面量」的调用，把正则拆成两段拼起来的
+    （`r"..." + r"..."`）它看不见；compile 是唯一定义处，所以定义成 compile 而
+    不是字符串。收集器自己瞎掉的保险在下面那条元守卫的「不少于六十把」自校验里，
+    这一条也带同一句。
+    """
+
+    rulers = _numeric_rulers()
+    assert len(rulers) >= 60, f"收集器该抓到几十把认数的尺子，只抓到 {len(rulers)}"
+    dups = {pat: lines for pat, lines in rulers.items() if len(lines) > 1}
+    assert not dups, dups
 

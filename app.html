@@ -63,12 +63,18 @@
        这里曾经躺着两套完整的玻璃 token 共 20 个，引用次数为 0，
        而组件里手写了 22 种 backdrop-filter。零引用的设计系统不是资产，
        是误导：它让下一个人以为这里已经统一过了。 */
-    /* 三个玻璃 token 也走梯子。--glass-border 原先是 .12，正好卡在第 2、3 档
+    /* 两个玻璃 token 也走梯子。--glass-border 原先是 .12，正好卡在第 2、3 档
        中间，作者自己的值问不出答案；用文件自己的事实定：72 条同时写了面与线的
        规则，线/面比值中位数 3.46，而这块面是第 1 档，3.46 × .04 = .138 → 第 3 档。 */
+    /* 曾经还有第三个：--glass-hi（白第 4 档），名字说它是玻璃的顶部高光。可顶部
+       高光是 §6.1 那 55 层厚度线，它们的 α 跨 .05–.60 共 23 个写法，而 .30 在 55
+       层里出现 0 次；那 55 层里有 38 层的宿主连一处 backdrop-filter 都没有——它们
+       是材料的厚度，不是玻璃的属性。一个 token 只能给一个数，这句话它给不了。
+       它唯一那处引用（.toast）画的也从来不是高光，是玻璃的第二条边界线，而 §6 自己
+       写着「--glass-border 是玻璃的唯一边界线」——名字说位置、用法在另一个位置的
+       token，会让写它的人以为自己在画高光，于是那条规矩被绕过而没人发觉。 */
     --bg-card:rgba(255,255,255,var(--o-1));
     --glass-border: rgba(255,255,255,var(--o-3));
-    --glass-hi: rgba(255,255,255,var(--o-4));
     --glass-blur-1: blur(10px);
     --glass-blur-2: blur(20px) saturate(1.3);
     --glass-blur-3: blur(32px) saturate(1.5);
@@ -410,7 +416,7 @@
     font-family:var(--serif-en);font-style:italic;font-weight:300;
     font-size:7.5px;letter-spacing:0.7em;color:var(--text-faint);
     text-transform:uppercase;
-    text-shadow:0 0 14px rgba(var(--comp-warm-rgb),0.12), 0 0 30px rgba(var(--bg-deep-rgb),0.9);
+    text-shadow:0 0 12px rgba(var(--comp-warm-rgb),0.12), 0 0 30px rgba(var(--bg-deep-rgb),0.9);
   }
   .comp-top .cn{
     font-family:var(--serif-cn);font-weight:300;font-size:10px;
@@ -769,7 +775,10 @@
     user-select:none;pointer-events:none;
   }
 
-  /* ===== 胶囊呼吸动画 ===== */
+  /* ===== 胶囊呼吸动画 =====
+     两帧的厚度线（inset y=±1px 那两条）逐字节相同：厚度是材料的属性，不是它呼吸到
+     哪一口的读数。那条线的几何在全 app 零例外地是 1px，所以它的颜色也不许随状态或
+     时间走——「它抬起来了」由投影说（§6.1 判据六、判据八）。 */
   @keyframes fieldBreathe{
     0%,100%{
       box-shadow:
@@ -782,8 +791,8 @@
     50%{
       box-shadow:
         0 6px 24px rgba(0,0,0,0.32),
-        0 16px 64px rgba(0,0,0,0.20),
-        inset 0 1px 0 rgba(255,255,255,0.26),
+        0 18px 72px rgba(0,0,0,0.20),
+        inset 0 1px 0 rgba(255,255,255,0.22),
         inset 0 -0.5px 0 rgba(0,0,0,0.10),
         inset 0 0 100px 0 rgba(var(--comp-warm-rgb),0.08);
     }
@@ -841,10 +850,10 @@
         rgba(var(--comp-warm-rgb),0.04) 0%,
         transparent 50%);
     box-shadow:
-      0 10px 40px rgba(0,0,0,0.38),
+      0 12px 48px rgba(0,0,0,0.38),
       0 24px 96px rgba(0,0,0,0.25),
-      inset 0 1px 0 rgba(var(--warm-hi),0.28),
-      inset 0 -0.5px 0 rgba(0,0,0,0.12),
+      inset 0 1px 0 rgba(255,255,255,0.22),
+      inset 0 -0.5px 0 rgba(0,0,0,0.10),
       inset 0 0 120px 0 rgba(var(--comp-warm-rgb),0.10),
       0 0 0 1px rgba(var(--comp-warm-rgb),0.06);
   }
@@ -869,7 +878,7 @@
     box-shadow:
       0 18px 72px rgba(0,0,0,0.50),
       0 40px 160px rgba(0,0,0,0.32),
-      inset 0 1px 0 rgba(var(--warm-hi),0.24),
+      inset 0 1px 0 rgba(255,255,255,0.22),
       inset 0 -0.5px 0 rgba(0,0,0,0.10),
       /* 边缘柔光消除锯齿感 */
       inset 0 0 0 0.5px rgba(var(--warm-hi),0.06),
@@ -1034,7 +1043,7 @@
     color:var(--text);
     box-shadow:
       0 2px 8px rgba(0,0,0,0.18),
-      inset 0 1px 0 rgba(255,255,255,0.22),
+      inset 0 1px 0 rgba(255,255,255,0.20),
       inset 0 -0.5px 0 rgba(0,0,0,0.06);
   }
   .contract-pill:active{
@@ -1091,7 +1100,7 @@
     box-shadow:
       0 2px 8px rgba(0,0,0,0.16),
       0 8px 32px rgba(0,0,0,0.12),
-      inset 0 1px 0 rgba(255,255,255,0.50),
+      inset 0 1px 0 rgba(255,255,255,0.40),
       inset 0 -0.5px 0 rgba(0,0,0,0.06),
       inset 0 0 14px rgba(255,255,255,0.05);
   }
@@ -1100,7 +1109,10 @@
     transition:transform var(--t-touch) var(--ease-silk);
   }
   /* 录音中不再用暖琥珀：那和这个钮平时的 hover 暖光几乎认不出差别，而这是一个
-     「麦克风是活的」的状态，认错的代价不是不好看（§7.1）。 */
+     「麦克风是活的」的状态，认错的代价不是不好看（§7.1）。那一轮改了底、边、投影
+     与环，却把顶上那条厚度线留在暖琥珀里——而厚度线本来就不该换色：材料没有变，
+     只是被自己发出的红光笼罩着，顶斜面反射的仍然是从正上方来的那束白光（§6.1
+     判据一、判据八）。 */
   .voice-ico-btn.recording{
     background:
       linear-gradient(180deg,
@@ -1111,15 +1123,15 @@
     box-shadow:
       0 2px 8px rgba(var(--recording-rgb),0.15),
       0 6px 24px rgba(var(--recording-rgb),0.10),
-      inset 0 1px 0 rgba(var(--warm-hi),0.35),
+      inset 0 1px 0 rgba(255,255,255,0.40),
       inset 0 -0.5px 0 rgba(0,0,0,0.06),
       inset 0 0 16px rgba(var(--recording-rgb),0.06),
       0 0 0 4px rgba(var(--recording-rgb),0.05);
     animation:recPulse 1.4s ease-in-out infinite;
   }
   @keyframes recPulse{
-    0%,100%{transform:scale(1);box-shadow:0 2px 8px rgba(var(--recording-rgb),0.15),0 6px 24px rgba(var(--recording-rgb),0.10),inset 0 1px 0 rgba(var(--warm-hi),0.35),inset 0 -0.5px 0 rgba(0,0,0,0.06),inset 0 0 16px rgba(var(--recording-rgb),0.06),0 0 0 4px rgba(var(--recording-rgb),0.05)}
-    50%{transform:scale(1.06);box-shadow:0 3px 12px rgba(var(--recording-rgb),0.22),0 10px 40px rgba(var(--recording-rgb),0.15),inset 0 1px 0 rgba(var(--warm-hi),0.42),inset 0 -0.5px 0 rgba(0,0,0,0.06),inset 0 0 20px rgba(var(--recording-rgb),0.10),0 0 0 8px rgba(var(--recording-rgb),0.025)}
+    0%,100%{transform:scale(1);box-shadow:0 2px 8px rgba(var(--recording-rgb),0.15),0 6px 24px rgba(var(--recording-rgb),0.10),inset 0 1px 0 rgba(255,255,255,0.40),inset 0 -0.5px 0 rgba(0,0,0,0.06),inset 0 0 16px rgba(var(--recording-rgb),0.06),0 0 0 4px rgba(var(--recording-rgb),0.05)}
+    50%{transform:scale(1.06);box-shadow:0 3px 12px rgba(var(--recording-rgb),0.22),0 12px 48px rgba(var(--recording-rgb),0.15),inset 0 1px 0 rgba(255,255,255,0.40),inset 0 -0.5px 0 rgba(0,0,0,0.06),inset 0 0 20px rgba(var(--recording-rgb),0.10),0 0 0 8px rgba(var(--recording-rgb),0.025)}
   }
   /* 图标：清晰的暖白色，不刺眼 */
   .voice-ico-btn svg{width:17px;height:17px;stroke:rgba(var(--text-rgb),0.7);fill:none;stroke-width:1.6;transition:stroke var(--t-move) var(--ease-silk), filter var(--t-move) var(--ease-silk)}
@@ -1172,7 +1184,7 @@
     box-shadow:
       0 2px 8px rgba(var(--comp-warm-rgb),0.20),
       0 8px 32px rgba(var(--comp-warm-rgb),0.18),
-      inset 0 1px 0 rgba(var(--warm-hi),0.45),
+      inset 0 1px 0 rgba(var(--warm-hi),0.35),
       inset 0 -0.5px 0 rgba(0,0,0,0.06),
       inset 0 0 18px rgba(var(--comp-warm-rgb),0.08);
   }
@@ -1180,7 +1192,7 @@
     transform:scale(0.90);
     transition:transform var(--t-touch) var(--ease-silk);
   }
-  .send-btn svg{width:16px;height:16px;stroke:var(--comp-warm);fill:none;stroke-width:2;transition:filter var(--t-move) var(--ease-silk);filter:drop-shadow(0 0 5px rgba(var(--comp-warm-rgb),0.35))}
+  .send-btn svg{width:16px;height:16px;stroke:var(--comp-warm);fill:none;stroke-width:2;transition:filter var(--t-move) var(--ease-silk);filter:drop-shadow(0 0 6px rgba(var(--comp-warm-rgb),0.35))}
   .send-btn:hover svg{filter:drop-shadow(0 0 12px rgba(var(--comp-warm-rgb),0.6))}
 
   /* ===== 紧凑态（胶囊内）的按钮：略微更清晰可辨
@@ -1202,7 +1214,7 @@
     box-shadow:
       0 1px 4px rgba(0,0,0,0.15),
       0 4px 16px rgba(0,0,0,0.10),
-      inset 0 1px 0 rgba(255,255,255,0.45),
+      inset 0 1px 0 rgba(255,255,255,0.40),
       inset 0 -0.5px 0 rgba(0,0,0,0.06);
   }
   #inputField:not(.expanded) .voice-ico-btn:not(.recording) svg{
@@ -1219,7 +1231,7 @@
     box-shadow:
       0 1px 4px rgba(var(--comp-warm-rgb),0.15),
       0 4px 16px rgba(var(--comp-warm-rgb),0.12),
-      inset 0 1px 0 rgba(var(--warm-hi),0.38),
+      inset 0 1px 0 rgba(var(--warm-hi),0.35),
       inset 0 -0.5px 0 rgba(0,0,0,0.06);
   }
   #inputField:not(.expanded) .send-btn svg{
@@ -1696,7 +1708,7 @@
   .le-delete{
     position:absolute;top:0;right:var(--lf-voice);z-index:3;
     width:24px;height:24px;border-radius:50%;
-    background:rgba(0,0,0,var(--o-6));color:var(--text-dim);
+    background:rgba(0,0,0,.72);color:var(--text-dim);
     display:flex;align-items:center;justify-content:center;
     font-size:14px;cursor:pointer;opacity:0;
     transition:opacity var(--t-move) var(--ease-silk);backdrop-filter:var(--glass-blur-1);
@@ -1772,7 +1784,7 @@
     width:100%;max-width:340px;aspect-ratio:3/4;
     border-radius:var(--r-sheet);overflow:hidden;
     background-size:cover;background-position:center;
-    box-shadow:0 25px 100px rgba(0,0,0,0.5),0 8px 32px rgba(0,0,0,0.3);
+    box-shadow:0 24px 96px rgba(0,0,0,0.5),0 8px 32px rgba(0,0,0,0.3);
     cursor:grab;
     transition:transform var(--t-touch) var(--ease-silk), box-shadow var(--t-move) var(--ease-silk);
     transform-origin:center bottom;
@@ -2231,8 +2243,8 @@
     font-size:22px;letter-spacing:0.05em;
     color:var(--memo-blue);
   }
-  .memo-stat.today .num{color:var(--memo-blue);text-shadow:0 0 14px rgba(var(--memo-blue-rgb),0.35)}
-  .memo-stat.todo .num{color:var(--memo-blue);text-shadow:0 0 14px rgba(var(--memo-blue-rgb),0.35)}
+  .memo-stat.today .num{color:var(--memo-blue);text-shadow:0 0 12px rgba(var(--memo-blue-rgb),0.35)}
+  .memo-stat.todo .num{color:var(--memo-blue);text-shadow:0 0 12px rgba(var(--memo-blue-rgb),0.35)}
   /* 已完成不该有自己的颜色：完成的事应该后退，不是换一种前进。 */
   .memo-stat.done .num{color:var(--text-faint)}
   .memo-stat .label{
@@ -2342,7 +2354,7 @@
      其余 = 页面身份色。原先这里是红/黄/绿三档，而每一行的 .memo-imp-tag 已经把
      紧 急 / 重 要 / 轻 松 用汉字写出来了——三个色是在给一个已经有字的分类配图例。 */
   .memo-item.imp-red::before{background:var(--refuse)}
-  .memo-item:hover{transform:translateY(-1px);border-color:rgba(255,255,255,var(--o-4));box-shadow:0 16px 64px rgba(0,0,0,0.4)}
+  .memo-item:hover{transform:translateY(-1px);border-color:rgba(255,255,255,var(--o-4));box-shadow:0 18px 72px rgba(0,0,0,0.4)}
   /* 「做完了」这一句已经被说了两遍：色档从 --text(16.55:1) 落到 --text-faint(3.73:1)，
      再加一条删除线。先前这里还有第三个驱动者 `opacity:0.55`，于是这条备忘的最终亮度
      谁都没选过（§7.11 的形状）。而「做完」不是 inactive component，没有豁免。
@@ -2354,7 +2366,7 @@
   .memo-delete{
     position:absolute;top:8px;right:8px;z-index:3;
     width:22px;height:22px;border-radius:50%;
-    background:rgba(0,0,0,var(--o-6));color:var(--text-dim);
+    background:rgba(0,0,0,.72);color:var(--text-dim);
     display:flex;align-items:center;justify-content:center;
     font-size:12px;cursor:pointer;opacity:0;
     transition:all var(--t-move) var(--ease-silk);backdrop-filter:var(--glass-blur-1);
@@ -2448,7 +2460,7 @@
     background:linear-gradient(135deg,rgba(var(--memo-blue-rgb),0.4),rgba(var(--memo-blue-rgb),0.12));
     border:1px solid rgba(var(--memo-blue-rgb),var(--o-5));
     display:flex;align-items:center;justify-content:center;cursor:pointer;
-    box-shadow:0 10px 40px rgba(var(--memo-blue-rgb),0.35),inset 0 1px 0 rgba(255,255,255,0.1);
+    box-shadow:0 12px 48px rgba(var(--memo-blue-rgb),0.35),inset 0 1px 0 rgba(255,255,255,0.1);
     transition:all var(--t-move) var(--ease-silk);
   }
   .memo-fab:hover{transform:scale(1.08) rotate(90deg);background:linear-gradient(135deg,rgba(var(--memo-blue-rgb),0.55),rgba(var(--memo-blue-rgb),0.2))}
@@ -2638,12 +2650,12 @@
     text-shadow:0 0 8px rgba(var(--comp-warm-rgb),0.30);
   }
   /* 各 tab 激活色的差异化发光（只改颜色，不加底）*/
-  .tab[data-screen="terrain"].active svg{stroke:var(--river-rose);filter:drop-shadow(0 0 9px rgba(var(--river-rose-rgb),0.58)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
+  .tab[data-screen="terrain"].active svg{stroke:var(--river-rose);filter:drop-shadow(0 0 8px rgba(var(--river-rose-rgb),0.58)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
   .tab[data-screen="terrain"].active .tab-label{color:var(--river-rose);text-shadow:0 0 8px rgba(var(--river-rose-rgb),0.30)}
-  .tab[data-screen="life"].active svg{stroke:var(--life-green);filter:drop-shadow(0 0 9px rgba(var(--life-green-rgb),0.52)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
+  .tab[data-screen="life"].active svg{stroke:var(--life-green);filter:drop-shadow(0 0 8px rgba(var(--life-green-rgb),0.52)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
   .tab[data-screen="life"].active .tab-label{color:var(--life-green);text-shadow:0 0 8px rgba(var(--life-green-rgb),0.28)}
   /* 「我们」页：烟霭紫 */
-  .tab[data-screen="we"].active svg{stroke:var(--me-violet);filter:drop-shadow(0 0 9px rgba(var(--me-violet-rgb),0.50)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
+  .tab[data-screen="we"].active svg{stroke:var(--me-violet);filter:drop-shadow(0 0 8px rgba(var(--me-violet-rgb),0.50)) drop-shadow(0 1px 4px rgba(0,0,0,0.4))}
   .tab[data-screen="we"].active .tab-label{color:var(--me-violet);text-shadow:0 0 8px rgba(var(--me-violet-rgb),0.28)}
 
   /* 地形 页内双切换 pill（#screen-river 等 river-* 名称是旧标识，只是没改名） */
@@ -2680,11 +2692,14 @@
   #screen-me.active .scene-canvas{opacity:0.85}
 
   /* toast */
+  /* 这条边线原先用 --glass-hi（第 4 档），是全 app 唯一一处；改成 --glass-border
+     之后它在自己的面上是 1.616:1，而 14 处玻璃卡的边线是 1.628:1，差 0.22 —— 远在
+     JND 2.3 之下，也就是眼睛认不出来。玻璃只有一条边界线（§6.1 判据八）。 */
   .toast{
     position:fixed;
     bottom: calc(120px + env(safe-area-inset-bottom, 0px));
     left:50%;transform:translateX(-50%);z-index:200;
-    background:rgba(var(--bg-lift-rgb),var(--o-7));border:1px solid var(--glass-hi);
+    background:rgba(var(--bg-lift-rgb),var(--o-7));border:1px solid var(--glass-border);
     backdrop-filter:var(--glass-blur-3);padding:12px 22px;border-radius:var(--r-sheet);
     font-family:var(--serif-cn);font-size:12px;color:var(--text);letter-spacing:0.15em;
     opacity:0;transition:opacity var(--t-move) var(--ease-silk),transform var(--t-move) var(--ease-silk);pointer-events:none;
@@ -2828,7 +2843,7 @@
 
   .we-screen{position:relative;z-index:1;padding:0 0 calc(110px + var(--safe-bottom))}
   .we-hero{padding:22px 24px 16px;text-align:center}
-  .we-avatar{width:84px;height:84px;display:block;margin:0 auto 15px;border-radius:var(--r-sheet);border:1px solid rgba(255,255,255,var(--o-3));box-shadow:0 14px 56px rgba(0,0,0,.36),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(var(--comp-warm-rgb),.12)}
+  .we-avatar{width:84px;height:84px;display:block;margin:0 auto 15px;border-radius:var(--r-sheet);border:1px solid rgba(255,255,255,var(--o-3));box-shadow:0 12px 48px rgba(0,0,0,.36),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(var(--comp-warm-rgb),.12)}
   .we-name{font-family:var(--serif-cn);font-size:18px;letter-spacing:.14em;color:var(--text);max-width:100%;overflow-wrap:anywhere}
   .we-ai-mark{padding:6px 9px;border-radius:999px;border:1px solid rgba(var(--me-violet-rgb),var(--o-4));font-family:var(--serif-en);font-size:9px;letter-spacing:.18em;color:var(--me-violet);background:rgba(var(--me-violet-rgb),var(--o-1))}
   .we-boundary{font-family:var(--serif-cn);font-size:11.5px;line-height:1.8;letter-spacing:.04em;color:var(--text-dim);max-width:300px;margin:10px auto 0;overflow-wrap:anywhere}
@@ -2838,12 +2853,12 @@
   .we-choice{flex:1;min-width:0;min-height:46px;display:flex;align-items:center;justify-content:center;padding:10px 5px;border-radius:var(--r-card);text-align:center;font-family:var(--serif-cn);font-size:11.5px;letter-spacing:.06em;color:var(--text-dim);border:1px solid rgba(255,255,255,var(--o-3));background:rgba(255,255,255,var(--o-1));cursor:pointer;overflow-wrap:anywhere;backdrop-filter:var(--glass-blur-2);-webkit-backdrop-filter:var(--glass-blur-2)}
   .we-choice.on{color:var(--me-violet);border-color:rgba(var(--me-violet-rgb),var(--o-5));background:linear-gradient(135deg,rgba(var(--me-violet-rgb),.16),rgba(var(--me-violet-rgb),.055));box-shadow:inset 0 1px 0 rgba(255,255,255,.11)}
   .we-utility{display:flex;justify-content:space-between;align-items:center;min-height:48px;padding:0 14px;margin-bottom:8px;border-radius:var(--r-card);border:1px solid rgba(255,255,255,var(--o-3));background:rgba(255,255,255,var(--o-1));backdrop-filter:var(--glass-blur-2);-webkit-backdrop-filter:var(--glass-blur-2);font-family:var(--serif-cn);font-size:12px;letter-spacing:.06em;color:var(--text-dim);cursor:pointer}
-  .we-ops-strip{display:flex;align-items:center;gap:10px;margin:3px 20px 3px;padding:12px 13px;border:1px solid rgba(var(--me-violet-rgb),var(--o-4));border-radius:var(--r-card);background:linear-gradient(110deg,rgba(var(--me-violet-rgb),.11),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 10px 40px rgba(0,0,0,.14);backdrop-filter:var(--glass-blur-2);-webkit-backdrop-filter:var(--glass-blur-2)}
-  .we-ops-led{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--me-violet);box-shadow:0 0 11px rgba(var(--me-violet-rgb),.55)}
+  .we-ops-strip{display:flex;align-items:center;gap:10px;margin:3px 20px 3px;padding:12px 13px;border:1px solid rgba(var(--me-violet-rgb),var(--o-4));border-radius:var(--r-card);background:linear-gradient(110deg,rgba(var(--me-violet-rgb),.11),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 12px 48px rgba(0,0,0,.14);backdrop-filter:var(--glass-blur-2);-webkit-backdrop-filter:var(--glass-blur-2)}
+  .we-ops-led{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--me-violet);box-shadow:0 0 12px rgba(var(--me-violet-rgb),.55)}
   /* 「有东西不对」在这个产品里已经有色了，就是 --refuse（拒绝、删除、逾期、不可用）。
      原先这里是 #d5a87a——一个琥珀警示灯挂在紫色的我们页上，既像共处的身份色，
      又不是任何一个功能色，是实打实的第四个（§7.1）。 */
-  .we-ops-led.warn{background:var(--refuse);box-shadow:0 0 11px rgba(var(--refuse-rgb),.5)}
+  .we-ops-led.warn{background:var(--refuse);box-shadow:0 0 12px rgba(var(--refuse-rgb),.5)}
   .we-ops-copy{min-width:0;display:flex;flex-direction:column;gap:2px}
   .we-ops-copy strong{font:11px var(--serif-cn);font-weight:400;color:var(--text-dim);letter-spacing:.06em;overflow-wrap:anywhere}
   .we-ops-copy span{font:9px/1.55 var(--serif-cn);color:var(--text-faint);overflow-wrap:anywhere}
@@ -3044,9 +3059,9 @@
      被重写一遍。三条都已并回上面那份唯一声明：写成 rgba(亮冷灰, alpha) 的字，
      渲染值取决于身后是什么，同一条声明在不同页上不是同一个色（§7.7）。 */
   /* 线程弹层仍需要一个可见的等待指示；生活流里的等待已经挂在时间轴上。 */
-  .mtp-pending .le-agent-pulse{width:6px;height:6px;border-radius:50%;background:var(--life-green);box-shadow:0 0 9px rgba(var(--life-green-rgb),.5);animation:agentBreath 3.6s ease-in-out infinite}
+  .mtp-pending .le-agent-pulse{width:6px;height:6px;border-radius:50%;background:var(--life-green);box-shadow:0 0 8px rgba(var(--life-green-rgb),.5);animation:agentBreath 3.6s ease-in-out infinite}
   .life-empty-mark{display:flex;align-items:center;justify-content:center;gap:var(--lf-tight);height:22px;margin:0 auto var(--lf-inner)}
-  .life-empty-mark span{display:block;width:5px;height:5px;border-radius:50%;background:var(--life-green);box-shadow:0 0 10px rgba(var(--life-green-rgb),.45);opacity:.42}
+  .life-empty-mark span{display:block;width:5px;height:5px;border-radius:50%;background:var(--life-green);box-shadow:0 0 12px rgba(var(--life-green-rgb),.45);opacity:.42}
   .life-empty-mark span:nth-child(2){width:7px;height:7px;opacity:.82}
   .life-empty-mark span:nth-child(3){opacity:.58}
   /* 空状态那两行的字号与文字色已并回上面那份唯一声明。定档的判据是两行的关系：
@@ -3101,7 +3116,7 @@
   .lap-images{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--lf-tight);margin-bottom:var(--lf-inner)}
   .lap-images:empty{display:none}
   .lap-img-item{position:relative;aspect-ratio:1;border-radius:var(--r-card);overflow:hidden;background:rgba(255,255,255,var(--o-1));border:1px solid rgba(255,255,255,var(--o-2))}
-  .lap-img-item .mi-remove{position:absolute;top:var(--lf-tight);right:var(--lf-tight);width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,var(--o-6));color:var(--text);display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(255,255,255,var(--o-3));transition:all var(--t-move) var(--ease-silk)}
+  .lap-img-item .mi-remove{position:absolute;top:var(--lf-tight);right:var(--lf-tight);width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.72);color:var(--text);display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;cursor:pointer;border:1px solid rgba(255,255,255,var(--o-3));transition:all var(--t-move) var(--ease-silk)}
   .lap-img-item .mi-remove:hover{transform:scale(1.05)}
   .lap-img-more{aspect-ratio:1;border-radius:var(--r-card);border:1px dashed rgba(var(--life-green-rgb),var(--o-3));background:rgba(var(--life-green-rgb),var(--o-1));color:var(--text-faint);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all var(--t-move) var(--ease-silk)}
   .lap-img-more:hover{background:rgba(var(--life-green-rgb),var(--o-2));border-color:rgba(var(--life-green-rgb),var(--o-4));color:var(--life-green);transform:scale(1.02)}
@@ -3142,7 +3157,7 @@
      一个提亮过的绿：那是生活绿的第二个值（§7.4）。 */
   .lap-bottom{position:sticky;bottom:-1px;z-index:3;margin:var(--lf-voice) calc(-1 * var(--lf-voice)) calc(-1 * var(--lf-inner));padding:var(--lf-inner) var(--lf-voice) calc(var(--lf-voice) + var(--safe-bottom));background:linear-gradient(180deg,rgba(var(--bg-deep-rgb),0),rgba(var(--bg-deep-rgb),.96) 30%);backdrop-filter:var(--glass-blur-2);-webkit-backdrop-filter:var(--glass-blur-2)}
   .lap-btn.send{width:100%;min-height:48px;border:1px solid rgba(var(--life-green-rgb),var(--o-5));border-radius:var(--r-card);background:linear-gradient(135deg,rgba(var(--life-green-rgb),.38),rgba(var(--life-green-rgb),.10));color:var(--text);font:300 14.5px/1 var(--serif-cn);letter-spacing:.32em;cursor:pointer;text-align:center;transition:all var(--t-move) var(--ease-silk);box-shadow:0 8px 32px rgba(var(--life-green-rgb),.10),inset 0 1px 0 rgba(255,255,255,.18);-webkit-tap-highlight-color:transparent}
-  .lap-btn.send:hover{background:linear-gradient(135deg,rgba(var(--life-green-rgb),.50),rgba(var(--life-green-rgb),.18));transform:translateY(-1px);box-shadow:0 12px 48px rgba(var(--life-green-rgb),.16),inset 0 1px 0 rgba(255,255,255,.20)}
+  .lap-btn.send:hover{background:linear-gradient(135deg,rgba(var(--life-green-rgb),.50),rgba(var(--life-green-rgb),.18));transform:translateY(-1px);box-shadow:0 12px 48px rgba(var(--life-green-rgb),.16),inset 0 1px 0 rgba(255,255,255,.18)}
   .lap-btn.send:active{transform:scale(.985)}
   /* 键盘弹起时两个面板的让位（.lap-mask / .lap-card / .mtp-card）已并回各自那份
      唯一声明——原先写在这里，把上面那三条的 transition 整条吃掉了。 */
