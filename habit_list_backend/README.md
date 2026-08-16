@@ -2,7 +2,7 @@
 
 - 技术栈：Python 3.12 · FastAPI · SQLAlchemy 2.0 async · PostgreSQL/pgvector（生产）· SQLite（本地）· Alembic · APScheduler · DashScope
 - 定位：陪伴式手机 App 的后端代理 + **可信记忆引擎**（事件、Claim、Evidence、Revision、受控召回）
-- 部署：Docker + Nginx 反代到 81.70.177.186，DashScope API Key **只存服务器 `.env`，不下发客户端**；当前阶段只做本地验证
+- 部署：Docker + Nginx 反代（服务器地址经 `SERVER_HOST` 环境变量注入，不入库），DashScope API Key **只存服务器 `.env`，不下发客户端**；当前阶段只做本地验证
 
 ## 本地快速跑起来
 

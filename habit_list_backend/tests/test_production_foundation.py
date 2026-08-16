@@ -70,7 +70,7 @@ def test_staging_keeps_relational_topology_but_can_bridge_the_legacy_web_client(
         process_role="api",
         database_url="postgresql+psycopg://terrain:secret@postgres/terrain_staging",
         database_schema_mode="alembic",
-        cors_allowed_origins="https://81.70.177.186",
+        cors_allowed_origins="https://203.0.113.10",
         auth_mode="legacy",
         api_auth_token="staging-test-token",
     )

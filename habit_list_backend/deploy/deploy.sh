@@ -14,7 +14,7 @@ case "$REPO_ROOT" in
     fi
     ;;
 esac
-SERVER="${SERVER_HOST:-81.70.177.186}"
+SERVER="${SERVER_HOST:?set SERVER_HOST to your server IP or domain}"
 REMOTE_USER="${SERVER_USER:-ubuntu}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/habit_list_backend}"
 ENV_FILE="${APP_ENV_FILE:-$PROJECT_DIR/.env.production}"

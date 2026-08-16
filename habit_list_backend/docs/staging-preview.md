@@ -37,7 +37,7 @@ export DEPLOY_PRELOAD_IMAGES=1
 bash deploy/deploy_staging.sh
 ```
 
-访问凭据保存在 `.secrets/staging/access.txt`。手机访问 `https://81.70.177.186`，输入其中的用户名和密码。
+访问凭据保存在 `.secrets/staging/access.txt`。手机访问 `https://<服务器IP>`（即部署时注入的 `SERVER_HOST`），输入其中的用户名和密码。
 
 ## 边界
 

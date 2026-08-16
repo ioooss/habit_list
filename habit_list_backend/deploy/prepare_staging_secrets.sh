@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-STAGING_HOST="${STAGING_HOST:-81.70.177.186}"
+STAGING_HOST="${STAGING_HOST:-${SERVER_HOST:?set SERVER_HOST (or STAGING_HOST) to your server IP}}"
 SECRET_DIR="$REPO_ROOT/.secrets/staging"
 ENV_FILE="$SECRET_DIR/.env.staging"
 HTPASSWD_FILE="$SECRET_DIR/staging.htpasswd"
