@@ -156,7 +156,6 @@
        8 层是伪元素），**没有一层承字**；浏览器实测 90 个承字元素只落在 5 个合成底上，
        最亮的 L=0.0092，离门槛还有 29 倍。 */
     --text:#f2ede5;
-    --text:#f2ede5;
     --text-rgb:242,237,229;
     --text-dim:#bdb29e;
     --text-faint:#756c5d;
@@ -588,7 +587,9 @@
     position:relative;
     opacity:0;transform:translateY(20px) rotate(-0.8deg) scale(0.97);
     animation:msgIn .95s var(--ease-silk) forwards;
-    filter:drop-shadow(0 4px 16px rgba(0,0,0,0.25));
+    /* 投影只挂在纸上（.bubble 的 box-shadow，8px/32px 与 2px/8px 均在档梯上）。
+       这里原先还有一层 filter:drop-shadow(0 4px 16px)——两种投影系统叠加，
+       便签脚下是两道叠黑的影，且 filter 会额外开一个合成层。一张纸一份投影。 */
   }
   @keyframes msgIn{
     to{opacity:1;transform:translateY(0) rotate(-0.5deg) scale(1)}
@@ -600,6 +601,9 @@
        用在主角的原话上就把原话变成了引述。全app只剩一条判读轴：倾斜=它，直立=你。 */
     font-family:var(--serif-cn);font-weight:300;font-size:15px;
     line-height:1.85;letter-spacing:0.05em;
+    /* 全 app 文本容器的同一句约定：一条粘不完的 URL 不许把纸撑破，
+       只许在字里断行（.tr-card-expr / .we-name 等同款）。 */
+    overflow-wrap:anywhere;
     /* 全 app 唯一的第四个文字色，也是唯一有资格是第四个的（§7.2 例外）：
        --text / --text-dim / --text-faint 三档全部是为暗底定的，放到奶黄纸上
        一个字都读不清。亮面需要深墨，这不是多了一档，是另一套的第一档。 */
@@ -636,7 +640,12 @@
   .msg-user .meta{
     margin-top:6px;text-align:right;
     font-family:var(--serif-en);font-style:italic;font-size:8.5px;letter-spacing:0.30em;
+    /* 0.30em 字距会在最后一个字后拖一段空隙，右对齐时整行被推离右缘约 2.6px，
+       与上方便签右缘对不齐。负 margin 把这段尾随空隙放出界外，字与纸边齐平。 */
+    margin-right:-0.30em;
     color:var(--text-faint);
+    /* 时间戳是纸的批注不是正文：选中正文复制时不把它带进去。 */
+    user-select:none;-webkit-user-select:none;
   }
 
   /* AI 回复：诗意叙事玻璃卡（左侧 80%，暖白文字，左侧细金线）
@@ -659,6 +668,8 @@
     position:relative;
     font-family:var(--serif-cn);font-weight:300;font-style:italic;
     font-size:15px;line-height:1.9;letter-spacing:0.055em;
+    /* 同上：玻璃卡也不许被一条长 URL 撑破（全 app 文本容器统一 anywhere）。 */
+    overflow-wrap:anywhere;
     /* 原先是 #f5ead7(245,234,215)，与 --text(242,237,229) 差 (3,-3,-14)。
        15px / weight 300 的正文上没有人能看出这个差别——一个看不出来的差别不是
        第四档文字色，是 --text 被抄错了一次（§7.1）。 */
@@ -712,14 +723,28 @@
     50%{opacity:1}
   }
   .msg-ai .signature{
-    margin-top:10px;text-align:right;padding-right:4px;
+    /* 落款与朗读按钮同一行：原先按钮 float 在签名块之后，独占一行 26px——
+       每条 AI 消息脚下都拖着约 47px 的尾巴（空签名 21px + 按钮行 30px）。
+       收成一行后尾巴只剩这一行的高度；typing 态里按钮 visibility:hidden
+       但保留 26px 盒，签名浮现时行高不变，不跳版。 */
+    margin-top:8px;
+    display:flex;align-items:center;justify-content:flex-end;gap:10px;
+    min-height:26px;
+    /* 落款与朗读键是卡的批注不是正文：选中正文复制时不把「— 它」带进去。 */
+    user-select:none;-webkit-user-select:none;
+  }
+  .msg-ai .signature-text{
     font-family:var(--serif-en);font-style:italic;font-size:8.5px;letter-spacing:0.38em;
-     color:var(--comp-warm);
-   }
+    /* 与 .msg-user .meta 同一条理由：0.38em 尾随字距混进 gap 里（10px 之外
+       又多约 3.2px），负 margin 还它一个真正的 10px。 */
+    margin-right:-0.38em;
+    color:var(--comp-warm);
+  }
+  .msg-ai.typing .message-speak{visibility:hidden}
   /* 图标按钮的克制由尺寸和边框承担，不由减光承担。原先 opacity:.65 → :hover 1
      是把「有多重要」和「你正指着它」写在同一条通道上；现在 hover 只动背景。 */
   .message-speak{
-    float:right;width:26px;height:26px;margin:4px 0 0 8px;padding:5px;
+    flex-shrink:0;width:26px;height:26px;padding:5px;
     border:1px solid rgba(var(--comp-warm-rgb),var(--o-3));border-radius:50%;
     background:rgba(var(--comp-warm-rgb),var(--o-1));color:var(--comp-warm);cursor:pointer;
   }
@@ -737,8 +762,17 @@
         rgba(var(--warm-hi),0.04) 0%,
         rgba(var(--warm-hi),0.022) 45%,
         rgba(var(--warm-hi),0.012) 100%);
-    color:rgba(var(--text-rgb),0.80);
+    /* 打字中是「还在成形」的话，走 --text-dim；typing class 一撤回到 --text。
+       原先的 rgba(var(--text-rgb),0.80) 是落在三档文字阶梯之外的第四种浓度。 */
+    color:var(--text-dim);
   }
+  /* 选中是同一支笔在两种材料上的两句话：在纸上留一道杏黄荧光（o-5），
+     在玻璃上点亮那一段（o-4——玻璃底深，同样的 alpha 会比纸上显得更亮，
+     所以低一档）。两处都只动背景不动字色：字色回答「这是什么字」，
+     与「你正选中它」无关。原先这里什么都没写，浏览器默认的选区蓝
+     在暖暗底与奶黄纸上都是一块异物。alpha 走 --o 档梯，不另发明。 */
+  .msg-user .bubble::selection{background:rgba(var(--comp-warm-rgb),var(--o-5))}
+  .msg-ai .bubble::selection{background:rgba(var(--comp-warm-rgb),var(--o-4))}
 
   /* ============ 输入区：呼吸胶囊 → 沉浸书写卡 ============
      设计哲学：
@@ -4904,11 +4938,14 @@ function pushMessage(text, who, opts){
     meta.textContent = _msgTimeStr(opts.at);
     wrap.appendChild(meta);
   }else{
-    // AI 卡片右下角签名（淡入后填"— 它"）
+    // AI 卡片右下角签名行（淡入后填"— 它"）。文字放 span 里：签名是
+    // textContent 填字的，按钮若作为签名容器的直接子节点会被填字冲掉。
     const sign = document.createElement('div');
     sign.className = 'signature';
-    sign.textContent = '';   // 打字完成再填字，避免太早露怯
-    wrap.appendChild(sign);
+    const signText = document.createElement('span');
+    signText.className = 'signature-text';
+    signText.textContent = '';   // 打字完成再填字，避免太早露怯
+    sign.appendChild(signText);
     const speak = document.createElement('button');
     speak.type='button';
     speak.className='message-speak';
@@ -4916,10 +4953,11 @@ function pushMessage(text, who, opts){
     speak.setAttribute('aria-label','播放语音');
     speak.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/></svg>';
     speak.addEventListener('click',()=>speakAssistantText(bubble.textContent||''));
-    wrap.appendChild(speak);
+    sign.appendChild(speak);
+    wrap.appendChild(sign);
     // 暴露两个 DOM 给打字机流程随时更新
     wrap._bubble = bubble;
-    wrap._sign = sign;
+    wrap._sign = signText;
   }
 
   compMessages.appendChild(wrap);
@@ -5233,8 +5271,13 @@ async function submitUser(){
       }
       // 收尾：去掉 typing class、填上签名
       if(curAiCard){
-        curAiCard.classList.remove('typing');
-        if(curAiCard._sign) curAiCard._sign.textContent = '— 它';
+        // 流里只来过空白（比如只有换行）时不留一张空卡——空玻璃卡没有话，只有壳
+        if(curAiCard._bubble && !curAiCard._bubble.textContent.trim()){
+          curAiCard.remove();
+        }else{
+          curAiCard.classList.remove('typing');
+          if(curAiCard._sign) curAiCard._sign.textContent = '— 它';
+        }
       }
       // 降级说明跟在回复之后。危机与备忘确认在降级时仍然有字，说明也照旧出现——
       // 用户既拿到该拿到的东西，也知道陪伴者这会儿并没有在听。

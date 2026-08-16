@@ -1638,6 +1638,56 @@ def test_the_degraded_notice_belongs_to_neither_voice():
     assert "italic" not in _rule_body("[data-degraded]>div")
 
 
+def test_a_bubble_never_breaks_its_own_silhouette_over_a_long_word():
+    """两种气泡都被允许长到 75% / 84% 宽，但一行粘不完的 URL 不得再把它们撑破。
+
+    全 app 的文本容器（.tr-card-expr / .we-name / .we-choice 那一族）早就统一
+    `overflow-wrap:anywhere`——气泡是最后两个没写的地方，而它们恰恰是用户
+    最可能往里贴链接的地方。这条守卫守的是「约定没有例外」，不是某一处样式。
+    """
+    for sel in (".msg-user .bubble", ".msg-ai .bubble"):
+        body = _rule_body(sel)
+        assert "overflow-wrap:anywhere" in body, sel
+        # anywhere 与 break-word 是两句话：后者只在量不尽时才断，min-content
+        # 之下仍会溢出。写了弱的那档等于没写。
+        assert "overflow-wrap:break-word" not in body, sel
+
+
+def test_selection_is_the_same_pen_on_two_materials_not_the_browsers_blue():
+    """选区是同一支笔在两种材料上的两句话：纸上荧光，玻璃上点亮。
+
+    未写 ::selection 时浏览器给一块系统蓝——在 #06080F 的暖暗底与奶黄纸上
+    都是异物。两处都只许动背景、不许动字色（字色回答「这是什么字」，与
+    「你正选中它」无关），且 alpha 必须走 --o 档梯：纸上 o-5、玻璃上 o-4
+    （玻璃底深，同样的 alpha 显得更亮，所以低一档——两句话，不互相抄）。
+    """
+    paper = _rule_body(".msg-user .bubble::selection")
+    glass = _rule_body(".msg-ai .bubble::selection")
+    assert paper.strip() == "background:rgba(var(--comp-warm-rgb),var(--o-5))", paper
+    assert glass.strip() == "background:rgba(var(--comp-warm-rgb),var(--o-4))", glass
+    # 全 app 只许这两处选区样式：多出来的任何一处都在回答没人问过的问题。
+    extra = [
+        sel.strip()
+        for sel, _body in re.findall(r"([^{}]+)\{([^{}]*)\}", CSS_NO_COMMENTS)
+        if "::selection" in sel
+    ]
+    assert extra == [
+        ".msg-user .bubble::selection",
+        ".msg-ai .bubble::selection",
+    ], extra
+
+
+def test_the_annotation_rows_are_not_part_of_the_copyable_text():
+    """时间戳与落款是批注，不是正文：选中复制时不许被带进去。
+
+    `.msg-user .meta` 与 `.msg-ai .signature`（整行，含朗读键）都写
+    `user-select:none`。朗读键本身没有字，但把它留在可选区里没有任何
+    好处——选中一段话时旁边浮着一颗被选中的按钮，是噪音。
+    """
+    assert "user-select:none" in _rule_body(".msg-user .meta")
+    assert "user-select:none" in _rule_body(".msg-ai .signature")
+
+
 # --- #27：文字的亮度只由色档决定，opacity 这条通道留给状态 -------------------
 #
 # `--text-faint` 满强度压在 `--bg-deep` 上只有 3.73:1 —— 三档阶梯自己的地板已经在
@@ -2337,8 +2387,8 @@ def test_a_colour_alpha_on_text_is_only_ever_written_by_a_state():
     """`color` 上的 alpha 只许由状态限定的选择器写。
 
     基线声明上的 α 是在三档之下发明第四档；而状态上的 α 是在回答「此刻发生了什么」。
-    唯一一处合法的是 `.msg-ai.typing .bubble{color:rgba(var(--text-rgb),.80)}` ——
-    那口气还没成为一句话。
+    最后那处合法的状态 α（`.msg-ai.typing .bubble` 的 `rgba(var(--text-rgb),.80)`）
+    在 v1.48 收进 `--text-dim`——「那口气还没成为一句话」正是 dim 那一档的语义。
     """
     bad, legal = [], []
     for sel, body in _top_level_rules():
@@ -2351,8 +2401,10 @@ def test_a_colour_alpha_on_text_is_only_ever_written_by_a_state():
         target = legal if _STATE_TOKEN.search(sel) else bad
         target.append((re.sub(r"\s+", " ", sel).strip(), colour.group(1).strip(), faded))
     assert bad == [], bad
-    # 正对照：如果一处都没有，说明这条守卫今天没有量到任何东西。
-    assert legal, "没有任何一处状态 alpha —— 先确认解析器还认得 rgba(var(--x-rgb),α)"
+    # 正对照：app 里已经一处状态 alpha 都不剩（v1.48），「解析器还认得这种拼法」
+    # 不能再靠现存的实例证明。拿一句合成的 rgba(var(--x-rgb),.80) 喂给同一个
+    # 解析器，它必须读出 0.80——这是 §7.7 的教训：尺子要先证明自己量得到。
+    assert _rgba_alphas("rgba(var(--text-rgb),.80)") == [0.80]
 
 
 def test_the_two_dimming_channels_never_multiply_in_one_rule():
@@ -6434,7 +6486,7 @@ def test_the_black_drop_shadows_were_never_twenty_steps():
 
     这条守卫钉的不是「该收成几档」——那要浏览器逐层量每一层影子真正落在什么底上
     （地色 / 玻璃卡 / 照片，三个答案），已登记成新任务。它钉的是**今天这 20 个值
-    彼此之间一对都过不了可辨阈**这件事：一个数写了 45 遍，看起来像 20 档。
+    彼此之间一对都过不了可辨阈**这件事：一个数写了 44 遍，看起来像 20 档。
     """
 
     alphas = sorted(
