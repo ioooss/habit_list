@@ -6680,8 +6680,11 @@ _GLYPH_GUARDED = (
 
 
 def _run_only(k_expression: str) -> set[str]:
+    # 绝对路径锚定本文件：这条子进程从仓库根目录发起时（根目录 pytest.ini 同样收集
+    # 本套件），相对路径 tests/... 会落空，pytest 以「file not found」退出且不输出
+    # 任何 FAILED 行——红集期望便永远对不上，表现为一条无法解释的假红。
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/test_aesthetic_baseline.py", "-k", k_expression,
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-k", k_expression,
          "-p", "no:cacheprovider", "--tb=no", "-q"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
