@@ -1,6 +1,5 @@
 # 一次性审计脚本：投影的「浮多高」与光晕的「发光半径」全量数据
 # 复用 test_aesthetic_baseline.py 的解析器，保证与守卫同一把尺子。
-import re
 import sys
 from collections import Counter
 from pathlib import Path

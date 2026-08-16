@@ -25,7 +25,6 @@ from app.memory.situation import (
     situation_to_prompt,
 )
 from app.memory.system1 import DEGRADED_NOTICE, SYSTEM_PROMPT
-from tests import mock_dashscope_chat_stream
 
 pytestmark = pytest.mark.anyio
 

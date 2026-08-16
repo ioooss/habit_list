@@ -186,7 +186,8 @@ def test_the_naive_composite_would_have_been_wrong_and_silently_so():
     这条会告诉他错在哪、错多少。
     """
 
-    naive = lambda fg, bg, a: tuple(round(f * a + b * (1 - a)) for f, b in zip(fg, bg))
+    def naive(fg, bg, a):
+        return tuple(round(f * a + b * (1 - a)) for f, b in zip(fg, bg))
     wrong = [
         (fg, bg, alpha)
         for fg, bg, alpha, expected in BROWSER_COMPOSITES

@@ -1,13 +1,18 @@
 name: backend-ci
 
 on:
-  push:
-    paths:
-      - "habit_list_backend/**"
-      - ".gitea/workflows/backend-ci.yml"
   pull_request:
     paths:
       - "habit_list_backend/**"
+      - "app.html"
+      - "内在地形-美学基线-v1.md"
+      - ".gitea/workflows/backend-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "habit_list_backend/**"
+      - "app.html"
+      - "内在地形-美学基线-v1.md"
       - ".gitea/workflows/backend-ci.yml"
 
 jobs:

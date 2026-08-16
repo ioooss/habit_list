@@ -36,3 +36,7 @@ temp/
 screenshots/
 design/_tmp/
 output/
+
+# 历史文档（本地留存，不进仓库；已被产品基线 v2 替代）
+产品设计文档.md
+内在地形-产品与技术基线-v0.6.md

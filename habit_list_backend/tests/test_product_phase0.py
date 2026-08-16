@@ -190,8 +190,8 @@ def test_rewrite_expression_contract_is_present():
 
 def test_rewrite_endpoint_exists_and_preserves_original():
     """后端 PATCH 端点必须存在，且把原文保留在 metadata.original_content 中。"""
+
     from app.api.v1 import moments as moments_router
-    from inspect import unwrap
 
     # 端点注册在路由里
     routes = [

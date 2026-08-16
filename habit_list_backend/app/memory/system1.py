@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass

@@ -199,8 +199,8 @@ async def test_non_memo_modes_are_not_overridden_by_memo_detection(
     assert done["data"]["memo_hit"] is False
     assert (await client.get("/api/v1/memos", params={"filter": "all"})).json()["items"] == []
 
-    from app.db.memory_models import UserEvent
     from app.db.database import get_sessionmaker
+    from app.db.memory_models import UserEvent
 
     async with get_sessionmaker()() as session:
         source = (await session.execute(select(UserEvent))).scalar_one()

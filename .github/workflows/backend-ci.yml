@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "habit_list_backend/**"
+      - "app.html"
+      - "内在地形-美学基线-v1.md"
       - ".github/workflows/backend-ci.yml"
   push:
     branches: [main]
     paths:
       - "habit_list_backend/**"
+      - "app.html"
+      - "内在地形-美学基线-v1.md"
       - ".github/workflows/backend-ci.yml"
 
 permissions:
